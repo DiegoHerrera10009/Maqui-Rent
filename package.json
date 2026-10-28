@@ -1,0 +1,10 @@
+{
+  "name": "maquirent",
+  "private": true,
+  "type": "module",
+  "description": "Marketplace distribuido para alquiler de maquinaria. Boceto funcional con celdas por país.",
+  "scripts": {
+    "start": "node scripts/dev.js",
+    "smoke": "node scripts/smoke.js"
+  }
+}

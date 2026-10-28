@@ -1,0 +1,124 @@
+x-service: &service
+  build: .
+  restart: unless-stopped
+
+services:
+  bus:
+    <<: *service
+    command: ["node", "services/bus/server.js"]
+    environment:
+      PORT: "4200"
+      DB_PATH: /data/bus.sqlite
+    volumes:
+      - bus:/data
+    ports:
+      - "4200:4200"
+
+  global:
+    <<: *service
+    command: ["node", "services/global/server.js"]
+    environment: &urls
+      PORT: "4000"
+      BUS_URL: http://bus:4200
+      DB_PATH: /data/global.sqlite
+      CELL_CO_URL: http://cell-co:4101
+      CELL_US_URL: http://cell-us:4102
+      CELL_BR_URL: http://cell-br:4103
+      CELL_DE_URL: http://cell-de:4104
+      CELL_FR_URL: http://cell-fr:4105
+      INTERNAL_TOKEN: maquirent-demo-internal
+    volumes:
+      - global:/data
+    ports:
+      - "4000:4000"
+    depends_on:
+      - bus
+
+  cell-co: &cell
+    <<: *service
+    command: ["node", "services/cell/server.js"]
+    environment:
+      <<: *urls
+      CELL: CO
+      PORT: "4101"
+      DB_PATH: /data/cell.sqlite
+    volumes:
+      - co:/data
+    ports:
+      - "4101:4101"
+    depends_on:
+      - bus
+
+  cell-us:
+    <<: *cell
+    environment:
+      <<: *urls
+      CELL: US
+      PORT: "4102"
+      DB_PATH: /data/cell.sqlite
+    volumes:
+      - us:/data
+    ports:
+      - "4102:4102"
+
+  cell-br:
+    <<: *cell
+    environment:
+      <<: *urls
+      CELL: BR
+      PORT: "4103"
+      DB_PATH: /data/cell.sqlite
+    volumes:
+      - br:/data
+    ports:
+      - "4103:4103"
+
+  cell-de:
+    <<: *cell
+    environment:
+      <<: *urls
+      CELL: DE
+      PORT: "4104"
+      DB_PATH: /data/cell.sqlite
+    volumes:
+      - de:/data
+    ports:
+      - "4104:4104"
+
+  cell-fr:
+    <<: *cell
+    environment:
+      <<: *urls
+      CELL: FR
+      PORT: "4105"
+      DB_PATH: /data/cell.sqlite
+    volumes:
+      - fr:/data
+    ports:
+      - "4105:4105"
+
+  web:
+    <<: *service
+    command: ["node", "services/web/server.js"]
+    environment:
+      <<: *urls
+      PORT: "8080"
+      GLOBAL_URL: http://global:4000
+    ports:
+      - "8080:8080"
+    depends_on:
+      - global
+      - cell-co
+      - cell-us
+      - cell-br
+      - cell-de
+      - cell-fr
+
+volumes:
+  bus:
+  global:
+  co:
+  us:
+  br:
+  de:
+  fr:
