@@ -236,6 +236,7 @@ listen(PORT, [
       const q = (url.searchParams.get("q") || "").trim();
       const cell = url.searchParams.get("country") || "";
       const category = url.searchParams.get("category") || "";
+      const excludeOwner = (url.searchParams.get("excludeOwner") || "").trim();
       const includeUnverified = url.searchParams.get("includeUnverified") === "1";
       const like = `%${q.replace(/[\\%_]/g, "")}%`;
       const rows = db.prepare(`SELECT * FROM catalog
@@ -243,7 +244,8 @@ listen(PORT, [
           AND (? = '' OR category = ?)
           AND (? = '' OR title LIKE ? OR brand LIKE ? OR model LIKE ? OR city LIKE ? OR description LIKE ?)
           AND (? = 1 OR bookable = 1)
-        ORDER BY cell, title`).all(cell, cell, category, category, q, like, like, like, like, like, includeUnverified ? 1 : 0);
+          AND (? = '' OR IFNULL(owner_pseudonym, '') != ?)
+        ORDER BY cell, title`).all(cell, cell, category, category, q, like, like, like, like, like, includeUnverified ? 1 : 0, excludeOwner, excludeOwner);
       return { body: { total: rows.length, source: "global-index", consistency: "eventual", machines: rows.map(mapMachine) } };
     },
   },

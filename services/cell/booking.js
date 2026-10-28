@@ -2,7 +2,7 @@ import { country } from "../../shared/countries.js";
 import { CHECKLIST, PRINCIPLES, STATE_LABELS } from "../../shared/content.js";
 import { cancellationPolicy, quoteRental, settlementPlan } from "../../shared/fees.js";
 import { daysBetween, evidenceHash, id, nowIso, rangesOverlap } from "../../shared/ids.js";
-import { schedule, transitMessage } from "../../shared/logistics.js";
+import { assertRentalDates, schedule, transitMessage } from "../../shared/logistics.js";
 import { HttpError } from "../../shared/http.js";
 import { txn } from "./db.js";
 import { enqueueMachine } from "./events.js";
@@ -19,6 +19,7 @@ export function createBooking(db, cell, renter, input) {
     if (machine.ownership_status !== "verified" || machine.active !== 1) {
       throw new HttpError(409, "La máquina todavía no tiene la propiedad verificada.", "not_bookable");
     }
+    assertRentalDates(input.startDate, input.endDate);
     const days = daysBetween(input.startDate, input.endDate);
     const destination = renter.home_cell || cell;
     const logistics = schedule(cell, destination, input.startDate, input.endDate);
@@ -224,6 +225,7 @@ export function resolveBooking(db, cell, user, bookingId, input) {
 }
 
 export function previewQuote(db, cell, machineId, startDate, endDate, homeCell) {
+  assertRentalDates(startDate, endDate);
   const machine = mustMachine(db, machineId);
   const logistics = schedule(cell, homeCell || cell, startDate, endDate);
   if (logistics.tooSoon) throw new HttpError(409, transitMessage(logistics), "transit_time");

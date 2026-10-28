@@ -49,6 +49,42 @@ function pct(rate) {
   return new Intl.NumberFormat("es-CO", { style: "percent", maximumFractionDigits: 1 }).format(rate);
 }
 
+function todayLocal() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+function nextDay(iso) {
+  const date = new Date(`${iso}T00:00:00`);
+  date.setDate(date.getDate() + 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function minDelivery(logistics) {
+  const today = todayLocal();
+  const earliest = logistics?.earliestStart;
+  return earliest && earliest > today ? earliest : today;
+}
+
+function syncReturnMin(form) {
+  const start = form.querySelector("[name=startDate]");
+  const end = form.querySelector("[name=endDate]");
+  if (!start || !end) return;
+  const floor = start.min || todayLocal();
+  const minEnd = start.value && start.value >= floor ? nextDay(start.value) : nextDay(floor);
+  end.min = minEnd;
+  if (end.value && end.value < minEnd) end.value = minEnd;
+}
+
+function assertBookDates(data, minStart) {
+  const today = todayLocal();
+  const floor = minStart && minStart > today ? minStart : today;
+  if (!data.startDate) throw new Error("Indica la fecha de entrega.");
+  if (data.startDate < today) throw new Error("La entrega no puede ser un día anterior a hoy.");
+  if (data.startDate < floor) throw new Error(`La entrega más temprana es ${floor}.`);
+  if (!data.endDate || data.endDate <= data.startDate) throw new Error("La devolución debe ser al menos un día después de la entrega.");
+}
+
 function saveSession(next) {
   session = next;
   if (next) localStorage.setItem("maquirent.session", JSON.stringify(next));
@@ -92,20 +128,27 @@ async function api(path, options = {}) {
   return data;
 }
 
+function navLink(href, label, extra = "") {
+  const target = href.replace(/^#/, "").split("?")[0] || "/";
+  const current = parseHash().path;
+  const alias = target === "/explorar" && current === "/buscar";
+  const active = current === target || alias;
+  return `<a href="${href}" ${extra} ${active ? 'aria-current="page"' : ""}>${label}</a>`;
+}
+
 function shell(content) {
   const user = session?.user;
   return `<div class="wrap">
     <header class="top">
       <a class="logo" href="#/">Maqui<span>Rent</span></a>
       <nav>
-        <a href="#/buscar">Buscar</a>
-        <a href="#/confianza">Confianza</a>
-        <a href="#/arquitectura">Arquitectura</a>
-        ${user ? `<a href="#/cuenta">Mi cuenta</a><a href="#/publicar">Publicar</a><a href="#/alquileres">Alquileres</a>` : ""}
-        ${user ? `<a class="me" href="#/cuenta">${esc(user.legalName)}</a><a href="#/" data-action="logout">Salir</a>` : `<a href="#/entrar">Ingresar</a><a href="#/registro">Registrarse</a>`}
+        ${navLink("#/explorar", "Explorar")}
+        ${navLink("#/confianza", "Confianza")}
+        ${user ? `${navLink("#/cuenta", "Mi cuenta")}${navLink("#/maquinas", "Mis máquinas")}${navLink("#/publicar", "Publicar")}${navLink("#/alquileres", "Alquileres")}` : ""}
+        ${user ? `<a class="me" href="#/cuenta">${esc(user.legalName)}</a><a href="#/" data-action="logout">Salir</a>` : `${navLink("#/entrar", "Ingresar")}${navLink("#/registro", "Registrarse")}`}
       </nav>
     </header>
-    <div class="rail">${brief.countries.map((country) => `<a href="#/buscar?country=${country.code}">${FLAGS[country.code]} ${esc(country.name)} · ${esc(country.language)}</a>`).join("")}</div>
+    <div class="rail">${brief.countries.map((country) => `<a href="#/explorar?country=${country.code}">${FLAGS[country.code]} ${esc(country.name)} · ${esc(country.language)}</a>`).join("")}</div>
     <main>${content}</main>
     <p class="footer">Boceto funcional. Los pagos, la verificación y la factura electrónica son adaptadores simulados. MaquiRent intermedia: no es el arrendatario y no custodia el dinero. ${esc(brief.fx.note)}</p>
   </div>`;
@@ -115,6 +158,44 @@ function photoOf(machine) {
   const id = machine.machineId || machine.id;
   const known = ["co-cat-320", "co-toyota-8f", "co-jd-310", "us-bobcat-t770", "us-jlg-600s", "us-cat-d6", "br-jcb-3cx", "br-liebherr-ltm", "br-schwing", "de-liebherr-r920", "de-manitou", "de-hamm", "fr-volvo-ec220", "fr-haulotte", "fr-cat-cs"];
   return known.includes(id) ? `/machines/${id}.jpg` : "";
+}
+
+function isMine(machine) {
+  const mine = session?.user?.pseudonym;
+  return Boolean(mine && machine.ownerPseudonym === mine);
+}
+
+function mixByCountry(machines) {
+  const groups = new Map();
+  for (const machine of machines) {
+    const list = groups.get(machine.cell) || [];
+    list.push(machine);
+    groups.set(machine.cell, list);
+  }
+  const mixed = [];
+  let index = 0;
+  let added = true;
+  while (added) {
+    added = false;
+    for (const list of groups.values()) {
+      if (list[index]) {
+        mixed.push(list[index]);
+        added = true;
+      }
+    }
+    index += 1;
+  }
+  return mixed;
+}
+
+function marketplace(machines) {
+  return mixByCountry(machines.filter((machine) => !isMine(machine)));
+}
+
+async function searchCatalog(params = new URLSearchParams()) {
+  const query = new URLSearchParams(params);
+  if (session?.user?.pseudonym) query.set("excludeOwner", session.user.pseudonym);
+  return api(`/api/global/search?${query}`);
 }
 
 function machineCard(machine) {
@@ -164,69 +245,67 @@ function economics(quote) {
       <h3>Depósito, aparte del total</h3>
       ${billRow("Garantía", "Se preautoriza y se libera si el acta no declara un daño.", quote.deposit, cell)}
     </div>
-    <details class="inside">
-      <summary>Reparto interno, ya incluido en el total</summary>
-      <div class="bill">
-        ${billRow("Al propietario", "Arrendamiento menos la comisión del 8%.", quote.ownerPayout, cell)}
-        ${billRow("Comisión 8%", "Sale del arrendamiento.", quote.ownerCommission, cell)}
-        ${billRow("Al asegurador", "La mayor parte de la protección.", quote.protectionInsurer, cell)}
-        ${billRow("A la filial, por la protección", "El resto de la protección.", quote.protectionPlatform, cell)}
-        ${billRow(`Procesador ${esc(quote.provider)}`, `${pct(quote.processorFeeRate)} del alquiler y las tarifas. Sale de la parte de la filial.`, quote.processorFee, cell)}
-        ${billRow("La filial se queda con", `${pct(quote.marginOnRental)} del arrendamiento, después del procesador.`, quote.platformNet, cell)}
-        ${quote.logistics ? billRow("Al transportista", "El flete completo.", quote.transport || 0, cell) : ""}
-      </div>
-      ${quote.logistics ? `<p class="muted">La máquina sale el ${esc(quote.logistics.dispatchDate)} y vuelve a estar libre el ${esc(quote.logistics.returnBy)} (${esc(quote.logistics.mode)}).</p>` : `<p class="muted">En la ficha de la máquina este cálculo también suma el flete desde tu país.</p>`}
-    </details>
+    ${quote.logistics ? `<p class="muted">La máquina sale el ${esc(quote.logistics.dispatchDate)} y vuelve a estar libre el ${esc(quote.logistics.returnBy)} (${esc(quote.logistics.mode)}).</p>` : `<p class="muted">En la ficha de la máquina este cálculo también suma el flete desde tu país.</p>`}
   </div>`;
 }
 
+function exploreForm(q, country, category, includeUnverified) {
+  const categories = ["Excavación", "Elevación", "Carga", "Compactación", "Concreto", "Grúa"];
+  return `<form class="panel" data-form="search">
+      <div class="grid">
+        <label>Qué máquina buscas<input name="q" value="${esc(q)}" placeholder="Excavadora, grúa, nacelle, Bagger"></label>
+        <label>País<select name="country"><option value="">Todos los países</option>${brief.countries.map((item) => `<option value="${item.code}" ${item.code === country ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select></label>
+        <label>Categoría<select name="category"><option value="">Todas</option>${categories.map((item) => `<option ${item === category ? "selected" : ""}>${esc(item)}</option>`).join("")}</select></label>
+      </div>
+      <label class="check"><input type="checkbox" name="includeUnverified" ${includeUnverified ? "checked" : ""}> Incluir máquinas con la propiedad todavía sin verificar</label>
+      <button>${q || country || category ? "Filtrar" : "Ver sugerencias"}</button>
+    </form>`;
+}
+
 async function viewHome() {
-  const result = await api("/api/global/search");
+  const result = await searchCatalog();
+  const suggestions = marketplace(result.machines).slice(0, 9);
   return `<section class="hero">
     <div>
       <p class="kicker">Marketplace de maquinaria</p>
-      <h1>Búscala en cinco países. El viaje entra en el precio.</h1>
-      <p class="lede">Colombia, Estados Unidos, Brasil, Alemania y Francia tienen cada uno su celda. MaquiRent intermedia entre quien publica la máquina y quien la usa. Si están en países distintos, la cotización suma los días y el flete.</p>
+      <h1>Explora equipos de cinco países. El viaje entra en el precio.</h1>
+      <p class="lede">Colombia, Estados Unidos, Brasil, Alemania y Francia tienen cada uno su celda. En Explorar ves sugerencias de todos los países; el filtro de país o categoría es opcional. Si publicaste una máquina, no aparece aquí: vive en Mis máquinas.</p>
     </div>
-    <form class="panel" data-form="search">
-      <label>Qué máquina buscas<input name="q" placeholder="Excavadora, grúa, nacelle, Bagger"></label>
-      <label>País<select name="country"><option value="">Los cinco</option>${brief.countries.map((country) => `<option value="${country.code}">${esc(country.name)}</option>`).join("")}</select></label>
-      <button>Buscar en el índice global</button>
-    </form>
+    ${exploreForm("", "", "", false)}
   </section>
   <section class="grid countries">${brief.countries.map((country) => `<article class="card"><p class="kicker">${FLAGS[country.code]} ${esc(country.language)}</p><h3>${esc(country.name)}</h3><p>${esc(country.subsidiary)}</p><p class="muted">${esc(country.provider)} · ${esc(country.invoiceSystem)} · ${esc(country.taxAuthority)}</p></article>`).join("")}</section>
   <section class="section grid">
-    <article class="card"><h3>1. Buscar</h3><p>El índice replica los anuncios por el bus. Puede ir un instante detrás de la celda.</p></article>
+    <article class="card"><h3>1. Explorar</h3><p>El índice replica los anuncios por el bus. Mezcla países. Tu propio catálogo no se ofrece para alquilarte a ti mismo.</p></article>
     <article class="card"><h3>2. Reservar</h3><p>Solo escribe la celda del propietario. Dos empresas no confirman la misma fecha.</p></article>
     <article class="card"><h3>3. Retener y repartir</h3><p>El procesador cobra, guarda el depósito y hace el split. MaquiRent no custodia el alquiler.</p></article>
   </section>
   <section class="section">
-    <h2>Anuncios ya replicados</h2>
-    <div class="grid">${brief.countries.map((country) => result.machines.find((machine) => machine.cell === country.code)).filter(Boolean).map(machineCard).join("")}</div>
+    <div class="bar"><h2>Sugerencias</h2><a class="button secondary" href="#/explorar">Ver todo en Explorar</a></div>
+    <p class="muted">Mezcla de países, sin filtrar. ${session ? "No incluye las que publicaste tú." : "Entra con tu cuenta para ocultar tus propias publicaciones."}</p>
+    <div class="grid">${suggestions.map(machineCard).join("") || `<p>No hay sugerencias ahora.</p>`}</div>
   </section>`;
 }
 
-async function viewSearch(params) {
+async function viewExplore(params) {
   const q = params.get("q") || "";
   const country = params.get("country") || "";
   const category = params.get("category") || "";
   const includeUnverified = params.get("includeUnverified") === "1";
-  const result = await api(`/api/global/search?q=${encodeURIComponent(q)}&country=${encodeURIComponent(country)}&category=${encodeURIComponent(category)}&includeUnverified=${includeUnverified ? "1" : "0"}`);
-  const categories = ["Excavación", "Elevación", "Carga", "Compactación", "Concreto", "Grúa"];
+  const query = new URLSearchParams();
+  if (q) query.set("q", q);
+  if (country) query.set("country", country);
+  if (category) query.set("category", category);
+  if (includeUnverified) query.set("includeUnverified", "1");
+  const result = await searchCatalog(query);
+  const machines = marketplace(result.machines);
+  const filtered = Boolean(q || country || category);
   return `<section class="section">
-    <p class="kicker">Índice global · consistencia eventual</p>
-    <h1>Buscar maquinaria</h1>
-    <form class="panel" data-form="search">
-      <div class="grid">
-        <label>Texto<input name="q" value="${esc(q)}"></label>
-        <label>País<select name="country"><option value="">Todos</option>${brief.countries.map((item) => `<option value="${item.code}" ${item.code === country ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select></label>
-        <label>Categoría<select name="category"><option value="">Todas</option>${categories.map((item) => `<option ${item === category ? "selected" : ""}>${esc(item)}</option>`).join("")}</select></label>
-      </div>
-      <label class="check"><input type="checkbox" name="includeUnverified" ${includeUnverified ? "checked" : ""}> Incluir máquinas con la propiedad todavía sin verificar</label>
-      <button>Actualizar búsqueda</button>
-    </form>
-    <p class="muted">${result.total} anuncios. Ver uno no reserva: la fecha se confirma en la celda del propietario.</p>
-    <div class="grid">${result.machines.map(machineCard).join("") || `<p>No hay anuncios con ese filtro.</p>`}</div>
+    <p class="kicker">Explorar · índice global</p>
+    <h1>${filtered ? "Resultados" : "Sugerencias de maquinaria"}</h1>
+    <p class="lede">${filtered ? "Puedes quitar el país o la categoría para volver a ver de todo." : "Primero ves equipos de cualquier país. Si quieres, filtra después."}</p>
+    ${exploreForm(q, country, category, includeUnverified)}
+    <p class="muted">${machines.length} anuncios${session ? " · sin las que publicaste tú" : ""}. Ver uno no reserva: la fecha se confirma en la celda del propietario.</p>
+    <div class="grid">${machines.map(machineCard).join("") || `<p>No hay anuncios con ese filtro.</p>`}</div>
   </section>`;
 }
 
@@ -239,11 +318,12 @@ async function viewMachine(cell, id) {
   const cellBlocks = JSON.stringify(cellResult.machine?.blocks || []);
   const diverged = globalResult.machine && cellResult.machine && globalBlocks !== cellBlocks;
   const info = countryOf(cell);
-  const logistics = session ? await api(`/api/cells/${cell}/logistics?homeCell=${session.cell}`).catch(() => null) : null;
+  const logistics = await api(`/api/cells/${cell}/logistics?homeCell=${session?.cell || cell}`).catch(() => null);
   const trip = logistics ? (logistics.sameCountry
     ? `Traslado dentro de ${esc(logistics.originName)}: ${esc(logistics.transitDays)} días de ida y vuelta. Entrega más temprana ${esc(logistics.earliestStart)}. Flete ${money(logistics.transport, cell)}.`
     : `Tu cuenta está en ${esc(logistics.destinationName)} y la máquina está en ${esc(logistics.originName)}. El transporte tarda ${esc(logistics.transitDays)} días (${esc(logistics.mode)}). No se puede entregar antes del ${esc(logistics.earliestStart)}. Flete de ida y vuelta ${money(logistics.transport, cell)}. La máquina sigue ocupada hasta que vuelve.`)
     : "Entra con tu cuenta para ver cuántos días tarda el transporte desde tu país y cuánto cuesta el flete.";
+  const minStart = minDelivery(logistics);
   return `<section class="section grid two">
     <div>
       ${photoOf({ ...machine, id }) ? `<img class="shot-lg" src="${photoOf({ ...machine, id })}" alt="">` : ""}
@@ -265,17 +345,23 @@ async function viewMachine(cell, id) {
       <h3>Ocupación según la celda, viaje incluido</h3>
       ${cellResult.machine ? blockList(cellResult.machine.blocks) : `<p class="muted">La celda no respondió.</p>`}
     </div>
-    <form class="panel" data-form="book" data-cell="${cell}" data-machine="${id}">
+    ${isMine(machine) ? `<aside class="panel">
+      <p class="kicker">Tu publicación</p>
+      <h3>${money(machine.dailyRate, cell)} / día</h3>
+      <div class="callout">Esta máquina la publicaste tú. No aparece en Explorar: la administras en Mis máquinas.</div>
+      <p class="muted">No puedes alquilarte tu propio equipo.</p>
+      <a class="button" href="#/maquinas">Ir a mis máquinas</a>
+    </aside>` : `<form class="panel" data-form="book" data-cell="${cell}" data-machine="${id}" data-min-start="${esc(minStart)}">
       <p class="kicker">Reservar</p>
       <h3>${money(machine.dailyRate, cell)} / día</h3>
       <div class="callout">${trip}</div>
       <p class="muted">MaquiRent no alquila la máquina: intermedia entre quien la publica y quien la usa.</p>
-      <label>Entrega en obra<input type="date" name="startDate" required ${logistics ? `min="${esc(logistics.earliestStart)}"` : ""}></label>
-      <label>Devolución en obra<input type="date" name="endDate" required ${logistics ? `min="${esc(logistics.earliestStart)}"` : ""}></label>
+      <label>Entrega en obra<input type="date" name="startDate" required min="${esc(minStart)}"></label>
+      <label>Devolución en obra<input type="date" name="endDate" required min="${esc(nextDay(minStart))}"></label>
       <button type="button" data-action="preview-quote">Calcular precio</button>
       <div id="quote-box"></div>
       ${session ? `<button>Solicitar</button>` : `<a class="button" href="#/entrar">Entra para solicitar</a>`}
-    </form>
+    </form>`}
   </section>`;
 }
 
@@ -421,7 +507,7 @@ function machineMine(machine) {
     <h3><a href="#/maquina/${session.cell}/${machine.id}">${esc(machine.title)}</a></h3>
     <p>${money(machine.dailyRate, session.cell)} / día · ${esc(machine.city)}</p>
     <p>Propiedad: <strong>${esc(machine.ownershipStatus)}</strong></p>
-    ${machine.ownershipStatus !== "verified" ? `<form data-form="verify-ownership" data-id="${machine.id}"><label>Factura o registro<input name="ownershipDoc" value="${esc(machine.ownershipDoc || "")}"></label><button>Verificar propiedad</button></form>` : `<p class="muted">Visible en la búsqueda. Quien la reserve ve el viaje y el flete desde su país.</p>`}
+    ${machine.ownershipStatus !== "verified" ? `<form data-form="verify-ownership" data-id="${machine.id}"><label>Factura o registro<input name="ownershipDoc" value="${esc(machine.ownershipDoc || "")}"></label><button>Verificar propiedad</button></form>` : `<p class="muted">Visible para otros en Explorar. Tú la ves solo aquí, no en el catálogo de alquiler.</p>`}
   </article>`;
 }
 
@@ -434,7 +520,7 @@ async function viewAccount() {
     <div>
       <p class="kicker">${FLAGS[user.cell]} ${esc(info.name)}</p>
       <h1>${esc(user.legalName)}</h1>
-      <p>Seudónimo ${esc(user.pseudonym)}. Con esta cuenta publicas y también alquilas.</p>
+      <p>Seudónimo ${esc(user.pseudonym)}. Con esta cuenta publicas y también alquilas. Lo que publicas no se te ofrece en Explorar.</p>
       <div class="callout">MaquiRent es el intermediario. El propietario es quien publica la máquina y el arrendatario es la empresa que la usa. Nosotros no somos ninguna de las dos partes ni custodiamos el dinero.</div>
       <div class="card">
         <p>Correo ${esc(user.email)}</p>
@@ -448,8 +534,11 @@ async function viewAccount() {
     <div>${dossierPanel(user, info)}</div>
   </section>
   <section class="section">
-    <div class="bar"><h2>Máquinas que publicaste</h2><a class="button" href="#/publicar">Publicar otra</a></div>
-    <div class="grid">${mine.map(machineMine).join("") || `<p>Todavía no publicas equipos. <a href="#/publicar">Publica la primera</a>.</p>`}</div>
+    <article class="card">
+      <h2>Mis publicaciones</h2>
+      <p>${mine.length ? `Tienes ${mine.length} máquina${mine.length === 1 ? "" : "s"} publicadas. No salen en Explorar para que no te las alquiles a ti mismo.` : "Todavía no publicas equipos."}</p>
+      <p class="actions-inline"><a class="button" href="#/maquinas">Abrir mis máquinas</a><a class="button secondary" href="#/publicar">Publicar</a></p>
+    </article>
   </section>`;
 }
 
@@ -482,7 +571,11 @@ function viewPublish() {
 async function viewOwnerMachines() {
   const result = await api(`/api/cells/${session.cell}/machines`);
   const mine = result.machines.filter((machine) => machine.ownerPseudonym === session.user.pseudonym);
-  return `<section class="section"><div class="bar"><h1>Mis máquinas</h1><a class="button" href="#/publicar">Publicar otra</a></div><div class="grid">${mine.map(machineMine).join("") || `<p>Todavía no publicas equipos. <a href="#/publicar">Publica la primera</a>.</p>`}</div></section>`;
+  return `<section class="section">
+    <div class="bar"><h1>Mis máquinas</h1><a class="button" href="#/publicar">Publicar otra</a></div>
+    <p class="lede">Estas son tus publicaciones. Quien explora el marketplace no las ve mezcladas con lo que puede alquilar.</p>
+    <div class="grid">${mine.map(machineMine).join("") || `<p>Todavía no publicas equipos. <a href="#/publicar">Publica la primera</a>.</p>`}</div>
+  </section>`;
 }
 
 async function viewBookings() {
@@ -617,40 +710,14 @@ function renderResidency(result) {
   return `<div class="grid section">${cards}</div><div class="callout ${global.catalogHits || global.identityHits || global.eventHits ? "bad" : "good"}"><strong>Plano global.</strong> Correo almacenado: ${global.emailStored ? "sí" : "no"}. Coincidencias en anuncios ${esc(global.catalogHits)}, directorio ${esc(global.identityHits)}, eventos ${esc(global.eventHits)}. Campos del directorio: ${(global.storedIdentityFields || []).join(", ") || "seudónimo, celda y rol"}.</div>`;
 }
 
-async function viewArchitecture() {
-  const health = await api("/api/global/health");
-  const identities = await api("/api/global/identities");
-  const feed = await api("/api/global/feed");
-  return `<section class="section"><p class="kicker">Celdas, bus y plano</p><h1>Una caída se queda en su país</h1>
-    <p>${esc(brief.principles.consistency)}</p>
-    <div class="diagram">
-      <div class="plane">Plano global · ${health.catalog} anuncios · ${health.identities} seudónimos</div>
-      <div class="busline">Bus de eventos · la celda publica desde su bandeja de salida y el plano consume en orden</div>
-      <div class="cells">${brief.countries.map((country) => {
-        const status = health.cells[country.code] || {};
-        return `<article class="cellbox ${status.up && status.accepting !== false ? "" : "down"}"><strong>${esc(country.name)}</strong><p>${status.up ? (status.accepting ? "Operando" : "Proceso vivo, operación pausada") : "Sin respuesta"}</p><p class="muted">Salida pendiente: ${esc(status.outboxPending ?? "—")}${status.holdOutbox ? " · bus retenido" : ""}</p>
-          <div class="actions"><button class="secondary" data-action="toggle-cell" data-cell="${country.code}" data-accepting="${status.accepting ? "0" : "1"}">${status.accepting ? "Pausar" : "Reanudar"}</button><button class="secondary" data-action="toggle-bus" data-cell="${country.code}" data-hold="${status.holdOutbox ? "0" : "1"}">${status.holdOutbox ? "Soltar bus" : "Retener bus"}</button></div></article>`;
-      }).join("")}</div>
-    </div>
-    <h2 class="section">Directorio mínimo</h2>
-    <div class="table-wrap"><table><thead><tr><th>Seudónimo</th><th>Celda</th><th>Rol</th></tr></thead><tbody>${identities.identities.map((item) => `<tr><td>${esc(item.pseudonym)}</td><td>${esc(item.cell)}</td><td>${esc(item.role)}</td></tr>`).join("")}</tbody></table></div>
-    <p class="muted">${esc(identities.note)}</p>
-    <h2 class="section">Últimos eventos públicos</h2>
-    <ul>${feed.events.slice(0, 12).map((event) => `<li>${esc(event.cell)} · ${esc(event.type)} · ${esc(event.summary)}</li>`).join("")}</ul>
-    <h2 class="section">Preguntas del jurado</h2>
-    ${brief.jury.map((item) => `<article class="card section"><h3>${esc(item.q)}</h3><p>${esc(item.a)}</p></article>`).join("")}
-  </section>`;
-}
-
 async function view(route) {
   const [name, a, b] = route.parts;
   if (!name) return viewHome();
-  if (name === "buscar") return viewSearch(route.params);
+  if (name === "explorar" || name === "buscar") return viewExplore(route.params);
   if (name === "maquina") return viewMachine(a, b);
   if (name === "entrar") return viewLogin();
   if (name === "registro") return viewRegister();
   if (name === "confianza") return viewTrust();
-  if (name === "arquitectura") return viewArchitecture();
   if (!session) return `<h1>Necesitas una sesión de tu país</h1><p><a href="#/entrar">Entrar</a></p>`;
   if (name === "cuenta") return viewAccount();
   if (name === "publicar") return viewPublish();
@@ -725,6 +792,7 @@ document.body.addEventListener("click", async (event) => {
     if (action === "preview-quote") {
       const form = target.closest("form");
       const data = formData(form);
+      assertBookDates(data, form.dataset.minStart);
       const home = session?.cell || form.dataset.cell;
       const quote = await api(`/api/cells/${form.dataset.cell}/quote?machineId=${form.dataset.machine}&start=${data.startDate}&end=${data.endDate}&homeCell=${home}`);
       document.querySelector("#quote-box").innerHTML = economics(quote.quote);
@@ -738,14 +806,6 @@ document.body.addEventListener("click", async (event) => {
       });
       return;
     }
-    if (action === "toggle-cell" || action === "toggle-bus") {
-      const body = action === "toggle-cell"
-        ? { accepting: target.dataset.accepting === "1" }
-        : { holdOutbox: target.dataset.hold === "1" };
-      await api(`/api/control/${target.dataset.cell}`, { method: "POST", body });
-      await render();
-      showToast(action === "toggle-cell" ? "Operación de la celda actualizada." : "Bandeja de salida actualizada.");
-    }
   } catch (error) {
     const box = document.querySelector("#quote-box");
     if (action === "preview-quote" && box) box.innerHTML = `<div class="callout bad">${esc(error.message)}</div>`;
@@ -756,6 +816,7 @@ document.body.addEventListener("click", async (event) => {
 document.body.addEventListener("change", (event) => {
   const input = event.target;
   if (input?.name === "cell" && input.form?.dataset.form === "register") applyRegisterPack(input.form, input.value);
+  if (input?.name === "startDate" && input.form?.dataset.form === "book") syncReturnMin(input.form);
 });
 
 document.body.addEventListener("submit", async (event) => {
@@ -772,7 +833,8 @@ document.body.addEventListener("submit", async (event) => {
       if (data.country) params.set("country", data.country);
       if (data.category) params.set("category", data.category);
       if (form.querySelector("[name=includeUnverified]")?.checked) params.set("includeUnverified", "1");
-      const next = `#/buscar?${params.toString()}`;
+      const query = params.toString();
+      const next = query ? `#/explorar?${query}` : "#/explorar";
       if (location.hash === next) await render();
       else location.hash = next;
       return;
@@ -857,7 +919,7 @@ document.body.addEventListener("submit", async (event) => {
         method: "POST",
         body: { ...data, operatorRequired: Boolean(form.querySelector("[name=operatorRequired]")?.checked) },
       });
-      location.hash = "#/cuenta";
+      location.hash = "#/maquinas";
       showToast(`Máquina publicada. Propiedad: ${created.machine.ownershipStatus}.`);
       return;
     }
@@ -868,6 +930,7 @@ document.body.addEventListener("submit", async (event) => {
       return;
     }
     if (kind === "book") {
+      assertBookDates(data, form.dataset.minStart);
       const created = await api(cellPath(form.dataset.cell, "/bookings"), {
         method: "POST",
         body: {

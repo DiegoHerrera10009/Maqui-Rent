@@ -27,6 +27,20 @@ export function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
+export function assertRentalDates(startDate, endDate) {
+  const start = String(startDate || "");
+  const end = String(endDate || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+    throw new HttpError(400, "Indica la fecha de entrega y la de devolución.", "bad_dates");
+  }
+  if (start < todayIso()) {
+    throw new HttpError(400, "La entrega no puede ser un día anterior a hoy.", "past_date");
+  }
+  if (end <= start) {
+    throw new HttpError(400, "La devolución debe ser al menos un día después de la entrega.", "bad_dates");
+  }
+}
+
 function routeOf(origin, destination) {
   if (origin === destination) return LOCAL;
   const spec = ROUTES[[origin, destination].sort().join("|")];

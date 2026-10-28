@@ -47,7 +47,7 @@ p { margin: 0.4rem 0; }
 .logo span { color: var(--orange); }
 nav { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
 nav a { text-decoration: none; color: var(--muted); }
-nav a.me { color: var(--ink); font-weight: 600; }
+nav a[aria-current="page"], nav a.me { color: var(--ink); font-weight: 600; }
 .rail { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 8px; }
 .rail a, .chip {
   text-decoration: none;
@@ -82,6 +82,7 @@ main { padding-bottom: 72px; }
 .price { font-family: var(--serif); font-size: 1.7rem; margin-top: auto; }
 .usd { color: var(--muted); font-family: var(--sans); font-size: 0.78rem; font-weight: 500; margin-left: 0.35rem; white-space: nowrap; }
 .bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.actions-inline { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .bar h1, .bar h2 { margin: 0; }
 form { display: grid; gap: 12px; }
 label { display: grid; gap: 6px; font-size: 0.92rem; }
@@ -143,8 +144,6 @@ th { font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; colo
 .aside-pay { background: white; border: 1px solid var(--line); }
 .commission h3, .aside-pay h3, .commission p { margin: 0 0 8px; }
 .commission .bill-row:last-child, .aside-pay .bill-row:last-child { border-bottom: 0; padding-bottom: 0; }
-.inside { margin-top: 14px; }
-.inside summary { cursor: pointer; font-weight: 600; }
 .callout { padding: 16px 18px; background: #fff7f2; }
 .callout.good { background: var(--green-soft); }
 .callout.bad { background: var(--red-soft); }
@@ -152,12 +151,6 @@ th { font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; colo
 .badge { border-radius: 999px; padding: 4px 8px; background: white; border: 1px solid var(--line); font-size: 0.82rem; }
 .section { margin-top: 34px; }
 .account { text-align: left; background: white; color: var(--ink); border: 1px solid var(--line); border-radius: 16px; padding: 12px; }
-.diagram { display: grid; gap: 10px; }
-.plane, .busline { padding: 16px; border-radius: 18px; background: var(--ink); color: white; }
-.busline { background: var(--orange); }
-.cells { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
-.cellbox { background: white; border-radius: 16px; padding: 12px; border: 1px solid var(--line); }
-.cellbox.down { background: var(--red-soft); }
 .login-layout { max-width: 980px; margin: 28px auto 0; }
 .login-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: stretch; }
 .login-pair > form { align-content: start; }
@@ -190,7 +183,7 @@ details.demo summary { cursor: pointer; color: var(--ink); font-weight: 600; }
 .check input { width: auto; margin-top: 4px; }
 
 @media (max-width: 980px) {
-  .hero, .grid, .grid.two, .grid.countries, .steps, .cells { grid-template-columns: 1fr; }
+  .hero, .grid, .grid.two, .grid.countries, .steps { grid-template-columns: 1fr; }
   .top { align-items: flex-start; flex-direction: column; }
 }
 @media (max-width: 760px) {
