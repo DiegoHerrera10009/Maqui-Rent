@@ -1,3 +1,5 @@
+import { CELL_LANG, LANGS, translate } from "./i18n.js";
+
 const FLAGS = { CO: "CO", US: "US", BR: "BR", DE: "DE", FR: "FR" };
 const FLOW = ["requested", "paid_held", "delivered", "returned", "settled"];
 const PAY_LABELS = {
@@ -45,8 +47,39 @@ function cellPath(cell, suffix) {
   return `/api/cells/${cell}${suffix}`;
 }
 
+function currentLang() {
+  const stored = localStorage.getItem("maquirent.lang");
+  if (stored && LANGS.some((item) => item.code === stored)) return stored;
+  if (session?.cell && CELL_LANG[session.cell]) return CELL_LANG[session.cell];
+  return "es";
+}
+
+function t(key, vars) {
+  return translate(currentLang(), key, vars);
+}
+
+function countryName(code) {
+  return t(`country.${code}`);
+}
+
+function categoryName(name) {
+  return t(`cat.${name}`);
+}
+
+function preferredCell() {
+  if (session?.cell) return session.cell;
+  return { es: "CO", en: "US", pt: "BR", de: "DE", fr: "FR" }[currentLang()] || "CO";
+}
+
+function setLang(code) {
+  if (!LANGS.some((item) => item.code === code)) return;
+  localStorage.setItem("maquirent.lang", code);
+  document.documentElement.lang = code;
+}
+
 function pct(rate) {
-  return new Intl.NumberFormat("es-CO", { style: "percent", maximumFractionDigits: 1 }).format(rate);
+  const locales = { es: "es-CO", en: "en-US", pt: "pt-BR", de: "de-DE", fr: "fr-FR" };
+  return new Intl.NumberFormat(locales[currentLang()] || "es-CO", { style: "percent", maximumFractionDigits: 1 }).format(rate);
 }
 
 function todayLocal() {
@@ -79,10 +112,10 @@ function syncReturnMin(form) {
 function assertBookDates(data, minStart) {
   const today = todayLocal();
   const floor = minStart && minStart > today ? minStart : today;
-  if (!data.startDate) throw new Error("Indica la fecha de entrega.");
-  if (data.startDate < today) throw new Error("La entrega no puede ser un día anterior a hoy.");
-  if (data.startDate < floor) throw new Error(`La entrega más temprana es ${floor}.`);
-  if (!data.endDate || data.endDate <= data.startDate) throw new Error("La devolución debe ser al menos un día después de la entrega.");
+  if (!data.startDate) throw new Error(t("dates.needStart"));
+  if (data.startDate < today) throw new Error(t("dates.past"));
+  if (data.startDate < floor) throw new Error(t("dates.earliest", { date: floor }));
+  if (!data.endDate || data.endDate <= data.startDate) throw new Error(t("dates.order"));
 }
 
 function saveSession(next) {
@@ -120,7 +153,7 @@ async function api(path, options = {}) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const error = new Error(data.error || "No se pudo completar la operación.");
+    const error = new Error(data.error || t("err.generic"));
     error.code = data.code;
     error.status = response.status;
     throw error;
@@ -138,25 +171,29 @@ function navLink(href, label, extra = "") {
 
 function shell(content) {
   const user = session?.user;
+  const lang = currentLang();
   return `<div class="wrap">
     <header class="top">
       <a class="logo" href="#/">Maqui<span>Rent</span></a>
       <nav>
-        ${navLink("#/explorar", "Explorar")}
-        ${navLink("#/confianza", "Confianza")}
-        ${user ? `${navLink("#/cuenta", "Mi cuenta")}${navLink("#/maquinas", "Mis máquinas")}${navLink("#/publicar", "Publicar")}${navLink("#/alquileres", "Alquileres")}` : ""}
-        ${user ? `<a class="me" href="#/cuenta">${esc(user.legalName)}</a><a href="#/" data-action="logout">Salir</a>` : `${navLink("#/entrar", "Ingresar")}${navLink("#/registro", "Registrarse")}`}
+        ${navLink("#/explorar", t("nav.explore"))}
+        ${navLink("#/confianza", t("nav.trust"))}
+        ${user ? `${navLink("#/cuenta", t("nav.account"))}${navLink("#/maquinas", t("nav.machines"))}${navLink("#/publicar", t("nav.publish"))}${navLink("#/alquileres", t("nav.bookings"))}` : ""}
+        ${user ? `<a class="me" href="#/cuenta">${esc(user.legalName)}</a><a href="#/" data-action="logout">${t("nav.logout")}</a>` : `${navLink("#/entrar", t("nav.login"))}${navLink("#/registro", t("nav.register"))}`}
+        <label class="lang-pick"><span>${t("nav.language")}</span>
+          <select name="uiLang" title="${esc(t("lang.hint"))}">${LANGS.map((item) => `<option value="${item.code}" ${item.code === lang ? "selected" : ""}>${esc(item.label)}</option>`).join("")}</select>
+        </label>
       </nav>
     </header>
-    <div class="rail">${brief.countries.map((country) => `<a href="#/explorar?country=${country.code}">${FLAGS[country.code]} ${esc(country.name)} · ${esc(country.language)}</a>`).join("")}</div>
+    <div class="rail">${brief.countries.map((country) => `<a href="#/explorar?country=${country.code}">${FLAGS[country.code]} ${esc(countryName(country.code))} · ${esc(country.language)}</a>`).join("")}</div>
     <main>${content}</main>
-    <p class="footer">Boceto funcional. Los pagos, la verificación y la factura electrónica son adaptadores simulados. MaquiRent intermedia: no es el arrendatario y no custodia el dinero. ${esc(brief.fx.note)}</p>
+    <p class="footer">${t("footer")} ${esc(brief.fx.note)}</p>
   </div>`;
 }
 
 function photoOf(machine) {
   const id = machine.machineId || machine.id;
-  const known = ["co-cat-320", "co-toyota-8f", "co-jd-310", "us-bobcat-t770", "us-jlg-600s", "us-cat-d6", "br-jcb-3cx", "br-liebherr-ltm", "br-schwing", "de-liebherr-r920", "de-manitou", "de-hamm", "fr-volvo-ec220", "fr-haulotte", "fr-cat-cs"];
+  const known = ["co-cat-320", "co-toyota-8f", "co-jd-310", "co-grove-rt", "co-dynapac", "co-putz", "us-bobcat-t770", "us-jlg-600s", "us-cat-d6", "us-grove-tms", "us-putz-39", "us-bomag", "br-jcb-3cx", "br-liebherr-ltm", "br-schwing", "br-cat-336", "br-jlg-600", "br-dynapac", "de-liebherr-r920", "de-manitou", "de-hamm", "de-liebherr-ltm", "de-putz", "de-bobcat", "fr-volvo-ec220", "fr-haulotte", "fr-cat-cs", "fr-potain", "fr-jcb-3cx", "fr-putz"];
   return known.includes(id) ? `/machines/${id}.jpg` : "";
 }
 
@@ -189,7 +226,11 @@ function mixByCountry(machines) {
 }
 
 function marketplace(machines) {
-  return mixByCountry(machines.filter((machine) => !isMine(machine)));
+  const available = machines.filter((machine) => !isMine(machine));
+  const home = preferredCell();
+  const local = available.filter((machine) => machine.cell === home);
+  const abroad = available.filter((machine) => machine.cell !== home);
+  return [...local, ...mixByCountry(abroad)];
 }
 
 async function searchCatalog(params = new URLSearchParams()) {
@@ -202,12 +243,12 @@ function machineCard(machine) {
   const photo = photoOf(machine);
   return `<a class="machine" href="#/maquina/${machine.cell}/${machine.machineId}">
     ${photo ? `<img class="shot" src="${photo}" alt="">` : ""}
-    <div class="badges"><span class="badge">${FLAGS[machine.cell]} ${esc(machine.country)}</span><span class="badge">${esc(machine.language)}</span><span class="badge">${esc(machine.category)}</span></div>
+    <div class="badges"><span class="badge">${FLAGS[machine.cell]} ${esc(countryName(machine.cell))}</span><span class="badge">${esc(machine.language)}</span><span class="badge">${esc(categoryName(machine.category))}</span></div>
     <h3>${esc(machine.title)}</h3>
     <p class="muted">${esc(machine.city)} · ${esc(machine.brand)} ${esc(machine.model)}</p>
     <p>${esc(machine.description)}</p>
-    <div class="price">${money(machine.dailyRate, machine.cell)} <span class="muted">/ día</span></div>
-    <p class="muted">${machine.bookable ? "Propiedad verificada" : "Propiedad por verificar"} · ${machine.blocks?.length ? "Tiene fechas ocupadas" : "Sin bloqueos replicados"}</p>
+    <div class="price">${money(machine.dailyRate, machine.cell)} <span class="muted">${t("card.day")}</span></div>
+    <p class="muted">${machine.bookable ? t("card.verified") : t("card.pending")} · ${machine.blocks?.length ? t("card.blocked") : t("card.free")}</p>
   </a>`;
 }
 
@@ -218,34 +259,34 @@ function billRow(label, hint, amount, cell) {
 function economics(quote) {
   const cell = quote.cell;
   const transport = quote.logistics
-    ? billRow("Transporte", `Ida y vuelta, ${esc(quote.logistics.transitDays)} días. Lo cobra el transportista.`, quote.transport || 0, cell)
+    ? billRow(t("quote.transport"), t("quote.transportHint", { days: quote.logistics.transitDays }), quote.transport || 0, cell)
     : "";
   return `<div class="quote">
-    <p class="kicker">Precio final</p>
+    <p class="kicker">${t("quote.kicker")}</p>
     <div class="bill-total">
-      <span>Total a pagar<small>Lo cobra el procesador y queda retenido hasta la devolución.</small></span>
+      <span>${t("quote.total")}<small>${t("quote.totalHint")}</small></span>
       <b>${money(quote.charged, cell)}</b>
     </div>
-    <h3>De qué se compone ese total</h3>
+    <h3>${t("quote.breakdown")}</h3>
     <div class="bill">
-      ${billRow("Arrendamiento", "Precio de la máquina. Lo factura el propietario.", quote.rental, cell)}
-      ${billRow("Tarifa de servicio, 5%", "MaquiRent se la cobra a quien usa la máquina.", quote.serviceFee, cell)}
-      ${billRow("Protección", "Cubre el equipo y la responsabilidad civil.", quote.protection, cell)}
+      ${billRow(t("quote.rental"), t("quote.rentalHint"), quote.rental, cell)}
+      ${billRow(t("quote.fee"), t("quote.feeHint"), quote.serviceFee, cell)}
+      ${billRow(t("quote.protection"), t("quote.protectionHint"), quote.protection, cell)}
       ${transport}
     </div>
     <div class="commission">
-      <h3>Comisión, 8%</h3>
-      <p>Se descuenta del arrendamiento de ${money(quote.rental, cell)}, que ya está completo dentro del total a pagar.</p>
+      <h3>${t("quote.commission")}</h3>
+      <p>${t("quote.commissionP", { amount: money(quote.rental, cell) })}</p>
       <div class="bill">
-        ${billRow("El propietario recibe", null, quote.ownerPayout, cell)}
-        ${billRow("Comisión de MaquiRent", null, quote.ownerCommission, cell)}
+        ${billRow(t("quote.ownerGets"), null, quote.ownerPayout, cell)}
+        ${billRow(t("quote.platformFee"), null, quote.ownerCommission, cell)}
       </div>
     </div>
     <div class="aside-pay">
-      <h3>Depósito, aparte del total</h3>
-      ${billRow("Garantía", "Se preautoriza y se libera si el acta no declara un daño.", quote.deposit, cell)}
+      <h3>${t("quote.deposit")}</h3>
+      ${billRow(t("quote.guarantee"), t("quote.depositHint"), quote.deposit, cell)}
     </div>
-    ${quote.logistics ? `<p class="muted">La máquina sale el ${esc(quote.logistics.dispatchDate)} y vuelve a estar libre el ${esc(quote.logistics.returnBy)} (${esc(quote.logistics.mode)}).</p>` : `<p class="muted">En la ficha de la máquina este cálculo también suma el flete desde tu país.</p>`}
+    ${quote.logistics ? `<p class="muted">${t("quote.dispatch", { dispatch: esc(quote.logistics.dispatchDate), back: esc(quote.logistics.returnBy), mode: esc(quote.logistics.mode) })}</p>` : `<p class="muted">${t("quote.freightNote")}</p>`}
   </div>`;
 }
 
@@ -253,36 +294,37 @@ function exploreForm(q, country, category, includeUnverified) {
   const categories = ["Excavación", "Elevación", "Carga", "Compactación", "Concreto", "Grúa"];
   return `<form class="panel" data-form="search">
       <div class="grid">
-        <label>Qué máquina buscas<input name="q" value="${esc(q)}" placeholder="Excavadora, grúa, nacelle, Bagger"></label>
-        <label>País<select name="country"><option value="">Todos los países</option>${brief.countries.map((item) => `<option value="${item.code}" ${item.code === country ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select></label>
-        <label>Categoría<select name="category"><option value="">Todas</option>${categories.map((item) => `<option ${item === category ? "selected" : ""}>${esc(item)}</option>`).join("")}</select></label>
+        <label>${t("explore.q")}<input name="q" value="${esc(q)}" placeholder="Excavadora, grúa, nacelle, Bagger"></label>
+        <label>${t("explore.country")}<select name="country"><option value="">${t("explore.allCountries")}</option>${brief.countries.map((item) => `<option value="${item.code}" ${item.code === country ? "selected" : ""}>${esc(countryName(item.code))}</option>`).join("")}</select></label>
+        <label>${t("explore.category")}<select name="category"><option value="">${t("explore.allCategories")}</option>${categories.map((item) => `<option value="${esc(item)}" ${item === category ? "selected" : ""}>${esc(categoryName(item))}</option>`).join("")}</select></label>
       </div>
-      <label class="check"><input type="checkbox" name="includeUnverified" ${includeUnverified ? "checked" : ""}> Incluir máquinas con la propiedad todavía sin verificar</label>
-      <button>${q || country || category ? "Filtrar" : "Ver sugerencias"}</button>
+      <label class="check"><input type="checkbox" name="includeUnverified" ${includeUnverified ? "checked" : ""}> ${t("explore.unverified")}</label>
+      <button>${q || country || category ? t("explore.filter") : t("explore.submit")}</button>
     </form>`;
 }
 
 async function viewHome() {
   const result = await searchCatalog();
   const suggestions = marketplace(result.machines).slice(0, 9);
+  const home = preferredCell();
   return `<section class="hero">
     <div>
-      <p class="kicker">Marketplace de maquinaria</p>
-      <h1>Explora equipos de cinco países. El viaje entra en el precio.</h1>
-      <p class="lede">Colombia, Estados Unidos, Brasil, Alemania y Francia tienen cada uno su celda. En Explorar ves sugerencias de todos los países; el filtro de país o categoría es opcional. Si publicaste una máquina, no aparece aquí: vive en Mis máquinas.</p>
+      <p class="kicker">${t("home.kicker")}</p>
+      <h1>${t("home.title")}</h1>
+      <p class="lede">${t("home.lede")}</p>
     </div>
     ${exploreForm("", "", "", false)}
   </section>
-  <section class="grid countries">${brief.countries.map((country) => `<article class="card"><p class="kicker">${FLAGS[country.code]} ${esc(country.language)}</p><h3>${esc(country.name)}</h3><p>${esc(country.subsidiary)}</p><p class="muted">${esc(country.provider)} · ${esc(country.invoiceSystem)} · ${esc(country.taxAuthority)}</p></article>`).join("")}</section>
+  <section class="grid countries">${brief.countries.map((country) => `<article class="card"><p class="kicker">${FLAGS[country.code]} ${esc(country.language)}</p><h3>${esc(countryName(country.code))}</h3><p>${esc(country.subsidiary)}</p><p class="muted">${esc(country.provider)} · ${esc(country.invoiceSystem)} · ${esc(country.taxAuthority)}</p></article>`).join("")}</section>
   <section class="section grid">
-    <article class="card"><h3>1. Explorar</h3><p>El índice replica los anuncios por el bus. Mezcla países. Tu propio catálogo no se ofrece para alquilarte a ti mismo.</p></article>
-    <article class="card"><h3>2. Reservar</h3><p>Solo escribe la celda del propietario. Dos empresas no confirman la misma fecha.</p></article>
-    <article class="card"><h3>3. Retener y repartir</h3><p>El procesador cobra, guarda el depósito y hace el split. MaquiRent no custodia el alquiler.</p></article>
+    <article class="card"><h3>${t("home.step1")}</h3><p>${t("home.step1p")}</p></article>
+    <article class="card"><h3>${t("home.step2")}</h3><p>${t("home.step2p")}</p></article>
+    <article class="card"><h3>${t("home.step3")}</h3><p>${t("home.step3p")}</p></article>
   </section>
   <section class="section">
-    <div class="bar"><h2>Sugerencias</h2><a class="button secondary" href="#/explorar">Ver todo en Explorar</a></div>
-    <p class="muted">Mezcla de países, sin filtrar. ${session ? "No incluye las que publicaste tú." : "Entra con tu cuenta para ocultar tus propias publicaciones."}</p>
-    <div class="grid">${suggestions.map(machineCard).join("") || `<p>No hay sugerencias ahora.</p>`}</div>
+    <div class="bar"><h2>${t("home.suggestions")}</h2><a class="button secondary" href="#/explorar">${t("home.seeAll")}</a></div>
+    <p class="muted">${session || localStorage.getItem("maquirent.lang") ? t("home.localNote", { country: countryName(home) }) : t("home.guestNote")}</p>
+    <div class="grid">${suggestions.map(machineCard).join("") || `<p>${t("explore.empty")}</p>`}</div>
   </section>`;
 }
 
@@ -300,12 +342,12 @@ async function viewExplore(params) {
   const machines = marketplace(result.machines);
   const filtered = Boolean(q || country || category);
   return `<section class="section">
-    <p class="kicker">Explorar · índice global</p>
-    <h1>${filtered ? "Resultados" : "Sugerencias de maquinaria"}</h1>
-    <p class="lede">${filtered ? "Puedes quitar el país o la categoría para volver a ver de todo." : "Primero ves equipos de cualquier país. Si quieres, filtra después."}</p>
+    <p class="kicker">${t("explore.kicker")}</p>
+    <h1>${filtered ? t("explore.results") : t("explore.title")}</h1>
+    <p class="lede">${filtered ? t("explore.ledeFilter") : t("explore.lede")}</p>
     ${exploreForm(q, country, category, includeUnverified)}
-    <p class="muted">${machines.length} anuncios${session ? " · sin las que publicaste tú" : ""}. Ver uno no reserva: la fecha se confirma en la celda del propietario.</p>
-    <div class="grid">${machines.map(machineCard).join("") || `<p>No hay anuncios con ese filtro.</p>`}</div>
+    <p class="muted">${t("explore.count", { n: machines.length })}${session ? t("explore.withoutMine") : ""}. ${t("explore.hint")}</p>
+    <div class="grid">${machines.map(machineCard).join("") || `<p>${t("explore.empty")}</p>`}</div>
   </section>`;
 }
 
@@ -313,60 +355,60 @@ async function viewMachine(cell, id) {
   const globalResult = await api(`/api/global/machines/${cell}/${id}`).catch((error) => ({ error }));
   const cellResult = await api(`/api/cells/${cell}/machines/${id}`).catch((error) => ({ error }));
   const machine = cellResult.machine || globalResult.machine;
-  if (!machine) return `<h1>Máquina no disponible</h1><p>${esc(globalResult.error?.message || cellResult.error?.message || "Sin datos")}</p>`;
+  if (!machine) return `<h1>${t("machine.unavailable")}</h1><p>${esc(globalResult.error?.message || cellResult.error?.message || "")}</p>`;
   const globalBlocks = JSON.stringify(globalResult.machine?.blocks || []);
   const cellBlocks = JSON.stringify(cellResult.machine?.blocks || []);
   const diverged = globalResult.machine && cellResult.machine && globalBlocks !== cellBlocks;
   const info = countryOf(cell);
   const logistics = await api(`/api/cells/${cell}/logistics?homeCell=${session?.cell || cell}`).catch(() => null);
   const trip = logistics ? (logistics.sameCountry
-    ? `Traslado dentro de ${esc(logistics.originName)}: ${esc(logistics.transitDays)} días de ida y vuelta. Entrega más temprana ${esc(logistics.earliestStart)}. Flete ${money(logistics.transport, cell)}.`
-    : `Tu cuenta está en ${esc(logistics.destinationName)} y la máquina está en ${esc(logistics.originName)}. El transporte tarda ${esc(logistics.transitDays)} días (${esc(logistics.mode)}). No se puede entregar antes del ${esc(logistics.earliestStart)}. Flete de ida y vuelta ${money(logistics.transport, cell)}. La máquina sigue ocupada hasta que vuelve.`)
-    : "Entra con tu cuenta para ver cuántos días tarda el transporte desde tu país y cuánto cuesta el flete.";
+    ? t("machine.localTrip", { origin: logistics.originName, days: logistics.transitDays, start: logistics.earliestStart, freight: money(logistics.transport, cell) })
+    : t("machine.crossTrip", { dest: logistics.destinationName, origin: logistics.originName, days: logistics.transitDays, mode: logistics.mode, start: logistics.earliestStart, freight: money(logistics.transport, cell) }))
+    : t("machine.needAccount");
   const minStart = minDelivery(logistics);
   return `<section class="section grid two">
     <div>
       ${photoOf({ ...machine, id }) ? `<img class="shot-lg" src="${photoOf({ ...machine, id })}" alt="">` : ""}
-      <p class="kicker">${FLAGS[cell]} ${esc(info.name)} · ${esc(info.language)} · contrato en esta celda</p>
+      <p class="kicker">${FLAGS[cell]} ${esc(countryName(cell))} · ${esc(info.language)} · ${t("machine.contractHere")}</p>
       <h1>${esc(machine.title || globalResult.machine.title)}</h1>
       <p class="lede">${esc(machine.description || "")}</p>
-      <p>${esc(machine.city)} · ${esc(machine.brand)} ${esc(machine.model)} · ${esc(machine.year)} · horómetro ${esc(machine.hourMeter)}</p>
-      <p class="price">${money(machine.dailyRate, cell)} <span class="muted">/ día</span></p>
+      <p>${esc(machine.city)} · ${esc(machine.brand)} ${esc(machine.model)} · ${esc(machine.year)} · ${t("machine.hours")} ${esc(machine.hourMeter)}</p>
+      <p class="price">${money(machine.dailyRate, cell)} <span class="muted">${t("card.day")}</span></p>
       <div class="badges">
-        <span class="badge">${machine.ownershipVerified || machine.ownershipStatus === "verified" ? "Propiedad verificada" : "Propiedad pendiente"}</span>
-        <span class="badge">${machine.operatorRequired ? "Exige operador certificado" : "Operador no exigido"}</span>
-        <span class="badge">Seudónimo ${esc(machine.ownerPseudonym || "")}</span>
-        ${machine.tradeName ? `<span class="badge">En la celda: ${esc(machine.tradeName)}</span>` : ""}
+        <span class="badge">${machine.ownershipVerified || machine.ownershipStatus === "verified" ? t("card.verified") : t("card.pending")}</span>
+        <span class="badge">${machine.operatorRequired ? t("machine.opYes") : t("machine.opNo")}</span>
+        <span class="badge">${t("machine.pseudo")} ${esc(machine.ownerPseudonym || "")}</span>
+        ${machine.tradeName ? `<span class="badge">${t("machine.trade")}: ${esc(machine.tradeName)}</span>` : ""}
       </div>
       ${diverged ? `<div class="callout">El índice global y la celda no muestran las mismas fechas. La búsqueda va detrás; la reserva usa la celda.</div>` : `<div class="callout good">Índice y celda coinciden en las fechas ocupadas que ya se replicaron.</div>`}
       ${cellResult.error ? `<div class="callout bad">La celda de ${esc(info.name)} no entregó la ficha: ${esc(cellResult.error.message)}. El anuncio del índice puede seguir visible.</div>` : ""}
-      <h3>Ocupación según el índice, viaje incluido</h3>
+      <h3>${t("machine.blocksIndex")}</h3>
       ${blockList(globalResult.machine?.blocks)}
-      <h3>Ocupación según la celda, viaje incluido</h3>
+      <h3>${t("machine.blocksCell")}</h3>
       ${cellResult.machine ? blockList(cellResult.machine.blocks) : `<p class="muted">La celda no respondió.</p>`}
     </div>
     ${isMine(machine) ? `<aside class="panel">
-      <p class="kicker">Tu publicación</p>
-      <h3>${money(machine.dailyRate, cell)} / día</h3>
-      <div class="callout">Esta máquina la publicaste tú. No aparece en Explorar: la administras en Mis máquinas.</div>
-      <p class="muted">No puedes alquilarte tu propio equipo.</p>
-      <a class="button" href="#/maquinas">Ir a mis máquinas</a>
+      <p class="kicker">${t("machine.yours")}</p>
+      <h3>${money(machine.dailyRate, cell)} ${t("card.day")}</h3>
+      <div class="callout">${t("machine.yoursNote")}</div>
+      <p class="muted">${t("machine.noSelf")}</p>
+      <a class="button" href="#/maquinas">${t("machine.goMine")}</a>
     </aside>` : `<form class="panel" data-form="book" data-cell="${cell}" data-machine="${id}" data-min-start="${esc(minStart)}">
-      <p class="kicker">Reservar</p>
-      <h3>${money(machine.dailyRate, cell)} / día</h3>
+      <p class="kicker">${t("machine.book")}</p>
+      <h3>${money(machine.dailyRate, cell)} ${t("card.day")}</h3>
       <div class="callout">${trip}</div>
-      <p class="muted">MaquiRent no alquila la máquina: intermedia entre quien la publica y quien la usa.</p>
-      <label>Entrega en obra<input type="date" name="startDate" required min="${esc(minStart)}"></label>
-      <label>Devolución en obra<input type="date" name="endDate" required min="${esc(nextDay(minStart))}"></label>
-      <button type="button" data-action="preview-quote">Calcular precio</button>
+      <p class="muted">${t("machine.intermediary")}</p>
+      <label>${t("machine.start")}<input type="date" name="startDate" required min="${esc(minStart)}"></label>
+      <label>${t("machine.end")}<input type="date" name="endDate" required min="${esc(nextDay(minStart))}"></label>
+      <button type="button" data-action="preview-quote">${t("machine.preview")}</button>
       <div id="quote-box"></div>
-      ${session ? `<button>Solicitar</button>` : `<a class="button" href="#/entrar">Entra para solicitar</a>`}
+      ${session ? `<button>${t("machine.request")}</button>` : `<a class="button" href="#/entrar">${t("machine.loginToBook")}</a>`}
     </form>`}
   </section>`;
 }
 
 function blockList(blocks = []) {
-  if (!blocks.length) return `<p class="muted">Sin fechas ocupadas.</p>`;
+  if (!blocks.length) return `<p class="muted">${t("machine.noBlocks")}</p>`;
   return `<ul>${blocks.map((block) => `<li>${esc(block.startDate)} → ${esc(block.endDate)} · ${esc(brief.states[block.state] || block.state)}</li>`).join("")}</ul>`;
 }
 
@@ -374,37 +416,37 @@ function viewLogin() {
   const recovering = location.hash.includes("recuperar");
   const groups = brief.countries.map((country) => {
     const accounts = demo.accounts.filter((account) => account.cell === country.code);
-    return `<div class="demo-country"><h3>${FLAGS[country.code]} ${esc(country.name)}</h3>${accounts.map((account) => `<button class="account" type="button" data-action="demo-login" data-cell="${account.cell}" data-email="${esc(account.email)}"><strong>${esc(account.legalName)}</strong><br><span class="muted">${esc(account.email)}</span></button>`).join("")}</div>`;
+    return `<div class="demo-country"><h3>${FLAGS[country.code]} ${esc(countryName(country.code))}</h3>${accounts.map((account) => `<button class="account" type="button" data-action="demo-login" data-cell="${account.cell}" data-email="${esc(account.email)}"><strong>${esc(account.legalName)}</strong><br><span class="muted">${esc(account.email)}</span></button>`).join("")}</div>`;
   }).join("");
   return `<section class="login-layout">
     <div class="login-pair">
       <form class="panel" data-form="login" ${recovering ? "hidden" : ""}>
-        <p class="kicker">Cuenta de empresa</p>
-        <h1>Ingresa</h1>
-        <p>Usa el correo con el que registraste la empresa y la contraseña.</p>
-        <label>País donde registraste la empresa<select name="cell">${brief.countries.map((country) => `<option value="${country.code}">${esc(country.name)}</option>`).join("")}</select></label>
-        <label>Correo<input name="email" type="email" autocomplete="username" required></label>
-        <label>Contraseña<input name="password" type="password" autocomplete="current-password" required></label>
-        <button>Ingresar</button>
-        <p class="switch"><a href="#/entrar?recuperar=1">¿Olvidaste tu contraseña?</a></p>
+        <p class="kicker">${t("login.kicker")}</p>
+        <h1>${t("login.title")}</h1>
+        <p>${t("login.p")}</p>
+        <label>${t("login.cell")}<select name="cell">${brief.countries.map((country) => `<option value="${country.code}">${esc(countryName(country.code))}</option>`).join("")}</select></label>
+        <label>${t("login.email")}<input name="email" type="email" autocomplete="username" required></label>
+        <label>${t("login.password")}<input name="password" type="password" autocomplete="current-password" required></label>
+        <button>${t("login.submit")}</button>
+        <p class="switch"><a href="#/entrar?recuperar=1">${t("login.forgot")}</a></p>
       </form>
       <form class="panel" data-form="forgot" ${recovering ? "" : "hidden"}>
-        <h2>Recuperar contraseña</h2>
-        <p class="muted">Indica el país y el correo de la empresa. Si existe una cuenta, enviamos las instrucciones allí.</p>
-        <label>País<select name="cell">${brief.countries.map((country) => `<option value="${country.code}">${esc(country.name)}</option>`).join("")}</select></label>
-        <label>Correo<input name="email" type="email" required></label>
-        <button>Enviar instrucciones</button>
-        <p class="switch"><a href="#/entrar">Volver a ingresar</a></p>
+        <h2>${t("login.recoverTitle")}</h2>
+        <p class="muted">${t("login.recoverP")}</p>
+        <label>${t("explore.country")}<select name="cell">${brief.countries.map((country) => `<option value="${country.code}">${esc(countryName(country.code))}</option>`).join("")}</select></label>
+        <label>${t("login.email")}<input name="email" type="email" required></label>
+        <button>${t("login.recoverSubmit")}</button>
+        <p class="switch"><a href="#/entrar">${t("login.back")}</a></p>
       </form>
       <aside class="panel register-cta">
-        <h2>¿La empresa aún no tiene cuenta?</h2>
-        <p>El registro pide cámara de comercio, registro fiscal, cédula del representante, póliza y certificado del operador. Sin ese expediente no se puede alquilar.</p>
-        <a class="button" href="#/registro">Registrarse</a>
+        <h2>${t("login.ctaTitle")}</h2>
+        <p>${t("login.ctaP")}</p>
+        <a class="button" href="#/registro">${t("login.ctaBtn")}</a>
       </aside>
     </div>
     <details class="demo">
-      <summary>Cuentas de demostración</summary>
-      <p class="muted">Contraseña ${esc(demo.password)}. Sirven para recorrer el boceto sin cargar documentos.</p>
+      <summary>${t("login.demo")}</summary>
+      <p class="muted">${t("login.demoP", { password: esc(demo.password) })}</p>
       <div class="demo-grid">${groups}</div>
     </details>
   </section>`;
@@ -505,9 +547,9 @@ function dossierPanel(user, info) {
 function machineMine(machine) {
   return `<article class="card">
     <h3><a href="#/maquina/${session.cell}/${machine.id}">${esc(machine.title)}</a></h3>
-    <p>${money(machine.dailyRate, session.cell)} / día · ${esc(machine.city)}</p>
-    <p>Propiedad: <strong>${esc(machine.ownershipStatus)}</strong></p>
-    ${machine.ownershipStatus !== "verified" ? `<form data-form="verify-ownership" data-id="${machine.id}"><label>Factura o registro<input name="ownershipDoc" value="${esc(machine.ownershipDoc || "")}"></label><button>Verificar propiedad</button></form>` : `<p class="muted">Visible para otros en Explorar. Tú la ves solo aquí, no en el catálogo de alquiler.</p>`}
+    <p>${money(machine.dailyRate, session.cell)} ${t("card.day")} · ${esc(machine.city)}</p>
+    <p>${t("mine.ownership")}: <strong>${esc(machine.ownershipStatus)}</strong></p>
+    ${machine.ownershipStatus !== "verified" ? `<form data-form="verify-ownership" data-id="${machine.id}"><label>Factura o registro<input name="ownershipDoc" value="${esc(machine.ownershipDoc || "")}"></label><button>Verificar propiedad</button></form>` : `<p class="muted">${t("mine.visible")}</p>`}
   </article>`;
 }
 
@@ -518,9 +560,9 @@ async function viewAccount() {
   const mine = result.machines.filter((machine) => machine.ownerPseudonym === user.pseudonym);
   return `<section class="section grid two">
     <div>
-      <p class="kicker">${FLAGS[user.cell]} ${esc(info.name)}</p>
+      <p class="kicker">${FLAGS[user.cell]} ${esc(countryName(user.cell))}</p>
       <h1>${esc(user.legalName)}</h1>
-      <p>Seudónimo ${esc(user.pseudonym)}. Con esta cuenta publicas y también alquilas. Lo que publicas no se te ofrece en Explorar.</p>
+      <p>${t("account.pseudo")} ${esc(user.pseudonym)}. ${t("account.both")}</p>
       <div class="callout">MaquiRent es el intermediario. El propietario es quien publica la máquina y el arrendatario es la empresa que la usa. Nosotros no somos ninguna de las dos partes ni custodiamos el dinero.</div>
       <div class="card">
         <p>Correo ${esc(user.email)}</p>
@@ -535,9 +577,9 @@ async function viewAccount() {
   </section>
   <section class="section">
     <article class="card">
-      <h2>Mis publicaciones</h2>
-      <p>${mine.length ? `Tienes ${mine.length} máquina${mine.length === 1 ? "" : "s"} publicadas. No salen en Explorar para que no te las alquiles a ti mismo.` : "Todavía no publicas equipos."}</p>
-      <p class="actions-inline"><a class="button" href="#/maquinas">Abrir mis máquinas</a><a class="button secondary" href="#/publicar">Publicar</a></p>
+      <h2>${t("account.pubTitle")}</h2>
+      <p>${mine.length ? t("account.pubCount", { n: mine.length }) : t("account.pubEmpty")}</p>
+      <p class="actions-inline"><a class="button" href="#/maquinas">${t("account.openMine")}</a><a class="button secondary" href="#/publicar">${t("nav.publish")}</a></p>
     </article>
   </section>`;
 }
@@ -545,11 +587,11 @@ async function viewAccount() {
 function viewPublish() {
   const info = countryOf(session.cell);
   return `<section class="section" style="max-width:760px">
-    <h1>Publicar en ${esc(info.name)}</h1>
+    <h1>${t("publish.title", { country: countryName(session.cell) })}</h1>
     <p>Cualquier cuenta verificada puede publicar, también si la abriste para alquilar. La tarifa se escribe en ${esc(info.currency)} y al lado se muestra el equivalente en dólares. La máquina no se puede reservar hasta verificar la factura o el registro.</p>
     <form class="panel" data-form="publish">
       <label>Título<input name="title" required></label>
-      <label>Categoría<select name="category">${["Excavación", "Elevación", "Carga", "Compactación", "Concreto", "Grúa"].map((item) => `<option>${esc(item)}</option>`).join("")}</select></label>
+      <label>${t("explore.category")}<select name="category">${["Excavación", "Elevación", "Carga", "Compactación", "Concreto", "Grúa"].map((item) => `<option value="${esc(item)}">${esc(categoryName(item))}</option>`).join("")}</select></label>
       <div class="grid">
         <label>Marca<input name="brand" required></label>
         <label>Modelo<input name="model" required></label>
@@ -572,15 +614,15 @@ async function viewOwnerMachines() {
   const result = await api(`/api/cells/${session.cell}/machines`);
   const mine = result.machines.filter((machine) => machine.ownerPseudonym === session.user.pseudonym);
   return `<section class="section">
-    <div class="bar"><h1>Mis máquinas</h1><a class="button" href="#/publicar">Publicar otra</a></div>
-    <p class="lede">Estas son tus publicaciones. Quien explora el marketplace no las ve mezcladas con lo que puede alquilar.</p>
-    <div class="grid">${mine.map(machineMine).join("") || `<p>Todavía no publicas equipos. <a href="#/publicar">Publica la primera</a>.</p>`}</div>
+    <div class="bar"><h1>${t("mine.title")}</h1><a class="button" href="#/publicar">${t("mine.another")}</a></div>
+    <p class="lede">${t("mine.lede")}</p>
+    <div class="grid">${mine.map(machineMine).join("") || `<p>${t("mine.empty")} <a href="#/publicar">${t("mine.first")}</a>.</p>`}</div>
   </section>`;
 }
 
 async function viewBookings() {
   const result = await api(`/api/my/bookings?homeCell=${session.cell}`);
-  return `<section class="section"><h1>Alquileres de tu cuenta</h1><p class="muted">Aquí están los contratos en los que publicaste la máquina y aquellos en los que la usas, también si la máquina está en otro país.</p><div class="grid">${result.bookings.map((booking) => `<a class="card" href="#/alquiler/${booking.cell}/${booking.id}"><p class="kicker">${FLAGS[booking.cell]} ${esc(booking.stateLabel)} · ${booking.side === "owner" ? "La publicaste" : "La vas a usar"}</p><h3>${esc(booking.machine.title)}</h3><p>En obra ${esc(booking.startDate)} → ${esc(booking.endDate)}</p><p>${money(booking.quote.charged, booking.cell)} retenidos o pactados</p></a>`).join("") || "<p>No hay alquileres todavía.</p>"}</div></section>`;
+  return `<section class="section"><h1>${t("bookings.title")}</h1><p class="muted">${t("bookings.lede")}</p><div class="grid">${result.bookings.map((booking) => `<a class="card" href="#/alquiler/${booking.cell}/${booking.id}"><p class="kicker">${FLAGS[booking.cell]} ${esc(booking.stateLabel)} · ${booking.side === "owner" ? t("bookings.owner") : t("bookings.renter")}</p><h3>${esc(booking.machine.title)}</h3><p>${esc(booking.startDate)} → ${esc(booking.endDate)}</p><p>${money(booking.quote.charged, booking.cell)}</p></a>`).join("") || `<p>${t("bookings.empty")}</p>`}</div></section>`;
 }
 
 async function viewBooking(cell, id) {
@@ -718,18 +760,19 @@ async function view(route) {
   if (name === "entrar") return viewLogin();
   if (name === "registro") return viewRegister();
   if (name === "confianza") return viewTrust();
-  if (!session) return `<h1>Necesitas una sesión de tu país</h1><p><a href="#/entrar">Entrar</a></p>`;
+  if (!session) return `<h1>${t("err.needSession")}</h1><p><a href="#/entrar">${t("err.enter")}</a></p>`;
   if (name === "cuenta") return viewAccount();
   if (name === "publicar") return viewPublish();
   if (name === "maquinas") return viewOwnerMachines();
   if (name === "alquileres") return viewBookings();
   if (name === "alquiler") return viewBooking(a, b);
   if (name === "contrato") return viewContract(a, b);
-  return `<h1>Esa página no está en el boceto</h1>`;
+  return `<h1>${t("err.missing")}</h1>`;
 }
 
 async function render() {
   const route = parseHash();
+  document.documentElement.lang = currentLang();
   try {
     app.innerHTML = shell(await view(route));
     if (route.path !== lastPath) {
@@ -737,15 +780,16 @@ async function render() {
       lastPath = route.path;
     }
   } catch (error) {
-    app.innerHTML = shell(`<h1>No se pudo abrir esta vista</h1><p>${esc(error.message)}</p>`);
+    app.innerHTML = shell(`<h1>${t("err.view")}</h1><p>${esc(error.message)}</p>`);
   }
 }
 
 async function login(cell, email, password) {
   const result = await api(`/api/cells/${cell}/auth/login`, { method: "POST", body: { email, password } });
   saveSession({ token: result.token, cell, user: result.user });
+  if (!localStorage.getItem("maquirent.lang") && CELL_LANG[cell]) setLang(CELL_LANG[cell]);
   location.hash = "#/cuenta";
-  showToast(`Sesión abierta en ${countryOf(cell).name}.`);
+  showToast(`${countryName(cell)}`);
 }
 
 function formData(form) {
@@ -817,6 +861,10 @@ document.body.addEventListener("change", (event) => {
   const input = event.target;
   if (input?.name === "cell" && input.form?.dataset.form === "register") applyRegisterPack(input.form, input.value);
   if (input?.name === "startDate" && input.form?.dataset.form === "book") syncReturnMin(input.form);
+  if (input?.name === "uiLang") {
+    setLang(input.value);
+    render();
+  }
 });
 
 document.body.addEventListener("submit", async (event) => {
@@ -883,6 +931,7 @@ document.body.addEventListener("submit", async (event) => {
         },
       });
       saveSession({ token: result.token, cell: data.cell, user: result.user });
+      if (!localStorage.getItem("maquirent.lang") && CELL_LANG[data.cell]) setLang(CELL_LANG[data.cell]);
       location.hash = "#/cuenta";
       showToast("Cuenta creada. El expediente quedó en revisión.");
       return;
