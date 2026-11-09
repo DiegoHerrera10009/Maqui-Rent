@@ -14,7 +14,7 @@ function readBody(req) {
     let size = 0;
     req.on("data", (chunk) => {
       size += chunk.length;
-      if (size > 1_000_000) {
+      if (size > 3_000_000) {
         reject(new HttpError(413, "El cuerpo de la petición es demasiado grande.", "payload_too_large"));
         req.destroy();
         return;
@@ -78,6 +78,17 @@ export function listen(port, routes) {
       if (!route) throw new HttpError(404, "Ruta no encontrada.", "not_found");
       const params = matchPath(route.path, url.pathname);
       const result = await route.handler({ req, url, body, params });
+      if (result?.raw != null) {
+        const payload = Buffer.isBuffer(result.raw) ? result.raw : Buffer.from(result.raw);
+        res.writeHead(result.status || 200, {
+          "content-type": result.type || "application/octet-stream",
+          "content-length": payload.length,
+          "cache-control": result.cache || "no-store",
+          "access-control-allow-origin": "*",
+        });
+        res.end(payload);
+        return;
+      }
       send(res, result?.status || 200, result?.body ?? {});
     } catch (error) {
       const status = error.status || 500;

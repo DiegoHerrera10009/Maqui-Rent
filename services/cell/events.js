@@ -1,5 +1,6 @@
 import { ACCOUNTS, DEMO_PASSWORD, MACHINES, PENDING_MACHINES } from "../../shared/catalog.js";
 import { hashPassword, id, nowIso, pseudonym } from "../../shared/ids.js";
+import { parseMachinePhotos } from "../../shared/machinePhotos.js";
 
 export function seed(db, cell) {
   const count = db.prepare("SELECT COUNT(*) AS n FROM users").get().n;
@@ -99,6 +100,7 @@ export function enqueueMachine(db, cell, machineId) {
   const owner = db.prepare("SELECT pseudonym FROM users WHERE id = ?").get(machine.owner_id);
   const blocks = db.prepare(`SELECT COALESCE(dispatch_date, start_date) AS startDate, COALESCE(return_by, end_date) AS endDate, state
     FROM bookings WHERE machine_id = ? AND state NOT IN ('cancelled', 'settled')`).all(machineId);
+  const photos = parseMachinePhotos(machine.photos_json);
   const payload = {
     cell,
     machineId: machine.id,
@@ -116,6 +118,9 @@ export function enqueueMachine(db, cell, machineId) {
     operatorRequired: Boolean(machine.operator_required),
     bookable: machine.active === 1 && machine.ownership_status === "verified",
     ownershipVerified: machine.ownership_status === "verified",
+    hasPhotos: photos.length > 0,
+    photoCount: photos.length,
+    photoUrl: photos.length > 0 ? `/api/cells/${cell}/machines/${machine.id}/photo/0` : null,
     ownerPseudonym: owner.pseudonym,
     blocks,
   };

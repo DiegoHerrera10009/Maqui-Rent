@@ -4,6 +4,7 @@ import { cancellationPolicy, quoteRental, settlementPlan } from "../../shared/fe
 import { daysBetween, evidenceHash, id, nowIso, rangesOverlap } from "../../shared/ids.js";
 import { assertRentalDates, schedule, transitMessage } from "../../shared/logistics.js";
 import { HttpError } from "../../shared/http.js";
+import { parseMachinePhotos, photoMeta } from "../../shared/machinePhotos.js";
 import { txn } from "./db.js";
 import { enqueueMachine } from "./events.js";
 import { issueInvoices, invoicesOf } from "./invoicing.js";
@@ -241,6 +242,126 @@ export function previewQuote(db, cell, machineId, startDate, endDate, homeCell) 
   return { machineId, quote, policy, blocks: blocksOf(db, machineId) };
 }
 
+function stepAt(steps, name) {
+  return steps.find((row) => row.step === name)?.createdAt || null;
+}
+
+function buildSchedule(booking, quote, acts, now) {
+  const rentalDays = quote.days || daysBetween(booking.start_date, booking.end_date);
+  const delivery = acts.find((act) => act.kind === "delivery");
+  const returned = acts.find((act) => act.kind === "return");
+  const deliveredAt = delivery?.createdAt || null;
+  const returnedAt = returned?.createdAt || null;
+  let dueReturnAt = null;
+  if (deliveredAt) {
+    const due = new Date(deliveredAt);
+    due.setUTCDate(due.getUTCDate() + rentalDays);
+    dueReturnAt = due.toISOString();
+  }
+  const clockRunning = booking.state === "delivered" && Boolean(dueReturnAt);
+  const overdue = clockRunning && dueReturnAt < now;
+  const remainingMs = clockRunning ? Math.max(0, new Date(dueReturnAt).getTime() - new Date(now).getTime()) : null;
+  const usedMs = deliveredAt ? Math.max(0, new Date(returnedAt || now).getTime() - new Date(deliveredAt).getTime()) : null;
+  return {
+    rentalDays,
+    plannedDelivery: booking.start_date,
+    plannedReturn: booking.end_date,
+    dispatchDate: booking.dispatch_date || null,
+    freeAgain: booking.return_by || null,
+    transitDays: quote.logistics?.transitDays ?? null,
+    mode: quote.logistics?.mode || null,
+    deliveredAt,
+    returnedAt,
+    dueReturnAt,
+    clockRunning,
+    overdue,
+    remainingMs,
+    usedMs,
+    serverNow: now,
+    note: deliveredAt
+      ? `El conteo de los ${rentalDays} día(s) de uso empezó al registrar el acta de entrega.`
+      : `Cuando registres el acta de entrega empiezan a contar los ${rentalDays} día(s) de uso.`,
+  };
+}
+
+function buildTimeline(booking, quote, acts, steps, schedule, now) {
+  const order = ["requested", "paid_held", "delivered", "returned", "settled"];
+  const labels = {
+    requested: "Reserva solicitada",
+    paid_held: "Pagada y retenida",
+    delivered: "Entregada en obra",
+    returned: "Devuelta",
+    settled: "Liquidada",
+  };
+  const hints = {
+    requested: "La celda del propietario confirma las fechas.",
+    paid_held: "El procesador retiene el cobro y el depósito.",
+    delivered: schedule.deliveredAt
+      ? `Uso en curso. Debes devolverla antes del ${schedule.dueReturnAt?.slice(0, 10) || schedule.plannedReturn}.`
+      : `Entrega prevista en obra: ${schedule.plannedDelivery}.`,
+    returned: schedule.returnedAt ? "Ya hay acta de devolución." : `Devolución prevista: ${schedule.plannedReturn}.`,
+    settled: "El procesador reparte el dinero.",
+  };
+  const stamps = {
+    requested: booking.created_at,
+    paid_held: stepAt(steps, "payment.held"),
+    delivered: schedule.deliveredAt || stepAt(steps, "act.delivery"),
+    returned: schedule.returnedAt || stepAt(steps, "act.return"),
+    settled: stepAt(steps, "payment.settled") || (booking.state === "settled" ? booking.updated_at : null),
+  };
+  if (booking.state === "cancelled" || booking.state === "disputed") {
+    return {
+      mode: booking.state,
+      title: booking.state === "cancelled" ? "Alquiler cancelado" : "Alquiler en disputa",
+      items: [
+        ...order.slice(0, Math.max(1, order.indexOf("paid_held") + (stamps.paid_held ? 1 : 0))).map((key) => ({
+          key,
+          label: labels[key],
+          hint: hints[key],
+          at: stamps[key],
+          status: stamps[key] ? "done" : "skipped",
+        })),
+        {
+          key: booking.state,
+          label: STATE_LABELS[booking.state],
+          hint: booking.state === "cancelled" ? "Se aplicó la política de cancelación." : "Quedó en mediación de la celda.",
+          at: booking.updated_at,
+          status: "now",
+        },
+      ],
+    };
+  }
+  const current = order.indexOf(booking.state);
+  const items = order.map((key, index) => {
+    let status = "pending";
+    if (index < current) status = "done";
+    else if (index === current) status = "now";
+    if (key === "delivered" && schedule.overdue && booking.state === "delivered") status = "late";
+    return {
+      key,
+      label: labels[key],
+      hint: hints[key],
+      at: stamps[key],
+      status,
+    };
+  });
+  return {
+    mode: "flow",
+    title: "Línea de tiempo del alquiler",
+    nextDeadline: schedule.clockRunning
+      ? { kind: "return", at: schedule.dueReturnAt, label: "Devolver la máquina" }
+      : booking.state === "paid_held"
+        ? { kind: "delivery", at: `${schedule.plannedDelivery}T12:00:00.000Z`, label: "Registrar entrega en obra" }
+        : booking.state === "requested"
+          ? { kind: "pay", at: null, label: "Pagar para retener el cobro" }
+          : booking.state === "returned"
+            ? { kind: "settle", at: null, label: "Liquidar y repartir" }
+            : null,
+    items,
+    serverNow: now,
+  };
+}
+
 export function viewBooking(db, cell, bookingId, viewer) {
   const booking = mustBooking(db, bookingId);
   if (viewer) assertParty(db, booking, viewer);
@@ -248,6 +369,17 @@ export function viewBooking(db, cell, bookingId, viewer) {
   const owner = db.prepare("SELECT * FROM users WHERE id = ?").get(machine.owner_id);
   const renter = db.prepare("SELECT * FROM users WHERE id = ?").get(booking.renter_id);
   const info = country(cell);
+  const quote = JSON.parse(booking.quote_json);
+  const acts = db.prepare("SELECT * FROM acts WHERE booking_id = ? ORDER BY created_at").all(bookingId).map(mapAct);
+  const steps = db.prepare("SELECT * FROM saga_steps WHERE booking_id = ? ORDER BY created_at").all(bookingId).map((row) => ({
+    id: row.id,
+    step: row.step,
+    detail: JSON.parse(row.detail_json),
+    createdAt: row.created_at,
+  }));
+  const now = nowIso();
+  const rentalSchedule = buildSchedule(booking, quote, acts, now);
+  const timeline = buildTimeline(booking, quote, acts, steps, rentalSchedule, now);
   return {
     id: booking.id,
     cell,
@@ -258,7 +390,9 @@ export function viewBooking(db, cell, bookingId, viewer) {
     dispatchDate: booking.dispatch_date,
     returnBy: booking.return_by,
     side: viewer && machine.owner_id === viewer.id ? "owner" : "renter",
-    quote: JSON.parse(booking.quote_json),
+    quote,
+    schedule: rentalSchedule,
+    timeline,
     paymentMethod: booking.payment_method,
     depositStatus: booking.deposit_status,
     damageClaim: booking.damage_claim,
@@ -270,15 +404,10 @@ export function viewBooking(db, cell, bookingId, viewer) {
       owner: party(owner),
       renter: party(renter),
     },
-    acts: db.prepare("SELECT * FROM acts WHERE booking_id = ? ORDER BY created_at").all(bookingId).map(mapAct),
+    acts,
     payments: paymentsOf(db, bookingId),
     invoices: invoicesOf(db, bookingId),
-    steps: db.prepare("SELECT * FROM saga_steps WHERE booking_id = ? ORDER BY created_at").all(bookingId).map((row) => ({
-      id: row.id,
-      step: row.step,
-      detail: JSON.parse(row.detail_json),
-      createdAt: row.created_at,
-    })),
+    steps,
     cancellation: ["requested", "paid_held"].includes(booking.state) ? cancellationPolicy(booking.start_date) : null,
     forum: info.forum,
     intermediary: PRINCIPLES.role,
@@ -484,7 +613,15 @@ function party(user) {
   };
 }
 
-export function publicMachine(machine, owner) {
+export function publicMachine(machine, owner, cell = null) {
+  const photos = parseMachinePhotos(machine.photos_json);
+  const cellCode = cell || machine.cell || null;
+  const media = cellCode ? photoMeta(photos, cellCode, machine.id) : {
+    photoCount: photos.length,
+    hasPhotos: photos.length > 0,
+    photoUrl: null,
+    photos: [],
+  };
   return {
     id: machine.id,
     title: machine.title,
@@ -503,14 +640,18 @@ export function publicMachine(machine, owner) {
     bookable: machine.active === 1 && machine.ownership_status === "verified",
     tradeName: owner?.legal_name || null,
     ownerPseudonym: owner?.pseudonym || null,
+    photoCount: media.photoCount,
+    hasPhotos: media.hasPhotos,
+    photoUrl: media.photoUrl,
+    photos: media.photos,
     blocks: undefined,
   };
 }
 
-export function machineDetail(db, machine) {
+export function machineDetail(db, machine, cell = null) {
   const owner = db.prepare("SELECT * FROM users WHERE id = ?").get(machine.owner_id);
   return {
-    ...publicMachine(machine, owner),
+    ...publicMachine(machine, owner, cell),
     blocks: blocksOf(db, machine.id),
     ownershipDoc: machine.ownership_doc,
     ownershipNote: machine.ownership_note || null,

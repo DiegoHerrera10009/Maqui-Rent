@@ -153,6 +153,8 @@ const I18N = {
     "account.both": "Con esta cuenta publicas y también alquilas. Lo que publicas no se te ofrece en Explorar.",
     "account.pseudo": "Seudónimo",
     "publish.title": "Publicar en {country}",
+    "publish.photos": "Fotos de la máquina",
+    "publish.photosHint": "1 a 4 imágenes. Serán las que aparecen en el anuncio. La filial debe aprobarlas.",
     "bookings.title": "Alquileres de tu cuenta",
     "bookings.lede": "Aquí están los contratos en los que publicaste la máquina y aquellos en los que la usas, también si la máquina está en otro país.",
     "bookings.empty": "No hay alquileres todavía.",

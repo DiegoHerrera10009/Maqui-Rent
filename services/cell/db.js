@@ -52,6 +52,7 @@ export function openDatabase(file) {
       ownership_status TEXT NOT NULL,
       ownership_doc TEXT,
       ownership_note TEXT,
+      photos_json TEXT,
       active INTEGER NOT NULL,
       created_at TEXT NOT NULL
     );
@@ -159,6 +160,7 @@ export function openDatabase(file) {
     "ALTER TABLE users ADD COLUMN kyc_note TEXT",
     "ALTER TABLE users ADD COLUMN operator_note TEXT",
     "ALTER TABLE machines ADD COLUMN ownership_note TEXT",
+    "ALTER TABLE machines ADD COLUMN photos_json TEXT",
   ]) {
     try {
       db.exec(sql);

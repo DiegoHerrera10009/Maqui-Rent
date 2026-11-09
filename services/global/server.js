@@ -168,6 +168,12 @@ pollBus().catch(() => {});
 pollCells().catch(() => {});
 
 function mapMachine(row) {
+  let payload = {};
+  try {
+    payload = JSON.parse(row.payload_json || "{}");
+  } catch {
+    payload = {};
+  }
   return {
     cell: row.cell,
     machineId: row.machine_id,
@@ -187,6 +193,9 @@ function mapMachine(row) {
     bookable: Boolean(row.bookable),
     ownershipVerified: Boolean(row.ownership_verified),
     ownerPseudonym: row.owner_pseudonym,
+    hasPhotos: Boolean(payload.hasPhotos),
+    photoCount: Number(payload.photoCount) || 0,
+    photoUrl: payload.photoUrl || null,
     blocks: JSON.parse(row.blocks_json || "[]"),
     country: COUNTRIES[row.cell].name,
     language: COUNTRIES[row.cell].language,

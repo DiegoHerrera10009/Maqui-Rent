@@ -93,12 +93,30 @@ export function assertDossier(cell, input) {
       if (insurer.length < 2) throw new HttpError(400, "Indica la aseguradora.", "insurer");
       if (!/^\d{4}-\d{2}-\d{2}$/.test(expires)) throw new HttpError(400, "Indica hasta cuándo está vigente la póliza.", "insurance_expiry");
     }
+    const mime = clean(raw.mime) || "application/pdf";
+    const content = clean(raw.content);
+    if (content) {
+      if (!/^(application\/pdf|image\/(png|jpeg|jpg|webp|gif))$/i.test(mime)) {
+        throw new HttpError(400, `El archivo de ${paper.title} debe ser PDF o imagen.`, "dossier_mime");
+      }
+      let bytes = 0;
+      try {
+        bytes = Buffer.from(content, "base64").length;
+      } catch {
+        throw new HttpError(400, `No se pudo leer el archivo de: ${paper.title}.`, "dossier_content");
+      }
+      if (bytes < 20 || bytes > 350_000) {
+        throw new HttpError(400, `El archivo de ${paper.title} debe pesar menos de 350 KB.`, "dossier_size");
+      }
+    }
     papers[paper.key] = {
       title: paper.title,
       file,
       reference: reference || null,
       insurer: insurer || null,
       expires: expires || null,
+      mime: content ? mime : null,
+      content: content || null,
     };
   }
   return {

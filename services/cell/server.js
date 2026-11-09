@@ -4,6 +4,8 @@ import { CHECKLIST, PRINCIPLES } from "../../shared/content.js";
 import { hashPassword, id, nowIso, pseudonym, verifyPassword } from "../../shared/ids.js";
 import { routePlan } from "../../shared/logistics.js";
 import { assertDossier } from "../../shared/onboarding.js";
+import { decodePaperContent, ownershipDocument, paperDocument } from "../../shared/paperPreview.js";
+import { normalizeMachinePhotos, parseMachinePhotos } from "../../shared/machinePhotos.js";
 import { HttpError, listen } from "../../shared/http.js";
 import {
   cancelBooking,
@@ -99,6 +101,24 @@ function parseDossier(raw) {
   }
 }
 
+function publicDossier(raw) {
+  const dossier = parseDossier(raw);
+  if (!dossier?.papers) return dossier;
+  const papers = {};
+  for (const [key, paper] of Object.entries(dossier.papers)) {
+    papers[key] = {
+      title: paper.title,
+      file: paper.file,
+      reference: paper.reference || null,
+      insurer: paper.insurer || null,
+      expires: paper.expires || null,
+      mime: paper.mime || null,
+      hasFile: true,
+    };
+  }
+  return { ...dossier, papers };
+}
+
 function publicUser(user) {
   return {
     id: user.id,
@@ -115,13 +135,33 @@ function publicUser(user) {
     operatorCertificate: user.operator_certificate,
     operatorStatus: user.operator_status,
     operatorNote: user.operator_note || null,
-    dossier: parseDossier(user.dossier_json),
+    dossier: publicDossier(user.dossier_json),
     pseudonym: user.pseudonym,
     homeCell: user.home_cell || CELL,
     cell: CELL,
     country: info.name,
     language: info.language,
   };
+}
+
+function resolvePaper(user, paperKey) {
+  const dossier = parseDossier(user.dossier_json) || {};
+  const paper = dossier.papers?.[paperKey];
+  if (!paper) throw new HttpError(404, "Ese papel no está en el expediente.", "paper_not_found");
+  const stored = decodePaperContent(paper);
+  if (stored) return stored;
+  return paperDocument(
+    {
+      legalName: user.legal_name,
+      taxId: user.tax_id,
+      city: user.city,
+      email: user.email,
+      representativeName: dossier.representativeName,
+      representativeId: dossier.representativeId,
+    },
+    paperKey,
+    paper,
+  );
 }
 
 function healthBody() {
@@ -283,11 +323,45 @@ listen(PORT, [
       const dossiers = db.prepare("SELECT * FROM users WHERE role != 'admin' AND kyc_status = 'pending' ORDER BY created_at").all().map(publicUser);
       const operators = db.prepare("SELECT * FROM users WHERE role != 'admin' AND kyc_status = 'verified' AND operator_status = 'pending' ORDER BY created_at").all().map(publicUser);
       const machines = db.prepare("SELECT * FROM machines WHERE ownership_status = 'pending' ORDER BY created_at").all().map((machine) => {
-        const detail = machineDetail(db, machine);
+        const detail = machineDetail(db, machine, CELL);
         const owner = db.prepare("SELECT email FROM users WHERE id = ?").get(machine.owner_id);
         return { ...detail, ownerEmail: owner?.email || null };
       });
       return { body: { cell: CELL, dossiers, operators, machines } };
+    },
+  },
+  {
+    method: "GET",
+    path: "/admin/users/:id/papers/:key",
+    handler: ({ req, params }) => {
+      requireOpen();
+      requireAdmin(req);
+      const user = db.prepare("SELECT * FROM users WHERE id = ?").get(params.id);
+      if (!user || user.role === "admin") throw new HttpError(404, "Esa empresa no está en esta celda.", "user_not_found");
+      return { body: resolvePaper(user, params.key) };
+    },
+  },
+  {
+    method: "GET",
+    path: "/me/papers/:key",
+    handler: ({ req, params }) => {
+      requireOpen();
+      const user = requireUser(req);
+      if (user.role === "admin") throw new HttpError(403, "La filial abre los papeles desde la cola de revisión.", "staff");
+      return { body: resolvePaper(user, params.key) };
+    },
+  },
+  {
+    method: "GET",
+    path: "/admin/machines/:id/ownership",
+    handler: ({ req, params }) => {
+      requireOpen();
+      requireAdmin(req);
+      const machine = db.prepare("SELECT * FROM machines WHERE id = ?").get(params.id);
+      if (!machine) throw new HttpError(404, "La máquina no está en esta celda.", "machine_not_found");
+      if (!machine.ownership_doc) throw new HttpError(404, "Esa máquina no tiene factura o registro.", "ownership_doc");
+      const owner = db.prepare("SELECT * FROM users WHERE id = ?").get(machine.owner_id);
+      return { body: ownershipDocument(machine, owner) };
     },
   },
   {
@@ -329,7 +403,7 @@ listen(PORT, [
       if (kind === "ownership") {
         const machine = db.prepare("SELECT * FROM machines WHERE id = ?").get(body.id);
         if (!machine) throw new HttpError(404, "La máquina no está en esta celda.", "machine_not_found");
-        if (machine.ownership_status !== "pending") throw new HttpError(409, "Esa factura ya no está en revisión.", "not_pending");
+        if (machine.ownership_status !== "pending") throw new HttpError(409, "Esa publicación ya no está en revisión.", "not_pending");
         if (!machine.ownership_doc || machine.ownership_doc.length < 4) {
           throw new HttpError(400, "La máquina no tiene factura o registro para revisar.", "ownership_doc");
         }
@@ -340,11 +414,11 @@ listen(PORT, [
             machine.id,
           );
           enqueueMachine(db, CELL, machine.id);
-          return machineDetail(db, db.prepare("SELECT * FROM machines WHERE id = ?").get(machine.id));
+          return machineDetail(db, db.prepare("SELECT * FROM machines WHERE id = ?").get(machine.id), CELL);
         });
         return { body: { reviewer: admin.email, machine: updated } };
       }
-      throw new HttpError(400, "La revisión es de expediente, operador o factura.", "kind");
+      throw new HttpError(400, "La revisión es de expediente, operador o publicación de máquina.", "kind");
     },
   },
   {
@@ -353,7 +427,7 @@ listen(PORT, [
     handler: () => {
       requireOpen();
       const rows = db.prepare("SELECT * FROM machines WHERE active = 1 ORDER BY title").all();
-      return { body: { cell: CELL, machines: rows.map((machine) => machineDetail(db, machine)) } };
+      return { body: { cell: CELL, machines: rows.map((machine) => machineDetail(db, machine, CELL)) } };
     },
   },
   {
@@ -363,7 +437,24 @@ listen(PORT, [
       requireOpen();
       const machine = db.prepare("SELECT * FROM machines WHERE id = ?").get(params.id);
       if (!machine) throw new HttpError(404, "La máquina no está en esta celda.", "machine_not_found");
-      return { body: { cell: CELL, source: "cell", machine: machineDetail(db, machine) } };
+      return { body: { cell: CELL, source: "cell", machine: machineDetail(db, machine, CELL) } };
+    },
+  },
+  {
+    method: "GET",
+    path: "/machines/:id/photo/:index",
+    handler: ({ params }) => {
+      const machine = db.prepare("SELECT * FROM machines WHERE id = ?").get(params.id);
+      if (!machine) throw new HttpError(404, "La máquina no está en esta celda.", "machine_not_found");
+      const photos = parseMachinePhotos(machine.photos_json);
+      const photo = photos[Number(params.index)];
+      if (!photo?.content) throw new HttpError(404, "Esa foto no está en el anuncio.", "photo_not_found");
+      return {
+        status: 200,
+        type: photo.mime || "image/jpeg",
+        cache: "private, max-age=60",
+        raw: Buffer.from(photo.content, "base64"),
+      };
     },
   },
   {
@@ -381,14 +472,15 @@ listen(PORT, [
         if (body[field] === undefined || body[field] === "") throw new HttpError(400, "Faltan datos de la máquina.", "fields");
       }
       const ownershipDoc = String(body.ownershipDoc || "").trim();
-      if (ownershipDoc.length < 4) throw new HttpError(400, "Indica la factura o el registro del equipo. La filial lo revisa antes de dejar reservar.", "ownership_doc");
+      if (ownershipDoc.length < 4) throw new HttpError(400, "Indica la factura o el registro del equipo. La filial lo revisa antes de publicar.", "ownership_doc");
+      const photos = normalizeMachinePhotos(body.photos, { required: true });
       const majorRate = Number(body.dailyRate);
       if (!Number.isFinite(majorRate) || majorRate <= 0) throw new HttpError(400, "La tarifa diaria no es válida.", "rate");
       const machineId = id("mch");
       const created = txn(db, () => {
         db.prepare(`INSERT INTO machines
-          (id, owner_id, category, brand, model, year, hour_meter, daily_rate, city, lat, lng, title, description, operator_required, ownership_status, ownership_doc, active, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 1, ?)`).run(
+          (id, owner_id, category, brand, model, year, hour_meter, daily_rate, city, lat, lng, title, description, operator_required, ownership_status, ownership_doc, photos_json, active, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 1, ?)`).run(
           machineId,
           user.id,
           String(body.category),
@@ -404,10 +496,11 @@ listen(PORT, [
           String(body.description),
           body.operatorRequired ? 1 : 0,
           ownershipDoc,
+          JSON.stringify(photos),
           nowIso(),
         );
         enqueueMachine(db, CELL, machineId);
-        return machineDetail(db, db.prepare("SELECT * FROM machines WHERE id = ?").get(machineId));
+        return machineDetail(db, db.prepare("SELECT * FROM machines WHERE id = ?").get(machineId), CELL);
       });
       return { status: 201, body: { machine: created } };
     },
@@ -418,16 +511,19 @@ listen(PORT, [
     handler: ({ req, params, body }) => {
       requireOpen();
       const user = requireUser(req);
-      if (user.role === "admin") throw new HttpError(403, "La filial no corrige la factura: la aprueba o la rechaza.", "staff");
+      if (user.role === "admin") throw new HttpError(403, "La filial no corrige la publicación: la aprueba o la rechaza.", "staff");
       const machine = db.prepare("SELECT * FROM machines WHERE id = ?").get(params.id);
-      if (!machine || machine.owner_id !== user.id) throw new HttpError(403, "Solo quien publicó el equipo puede corregir la factura.", "not_owner");
-      if (machine.ownership_status !== "rejected") throw new HttpError(409, "Solo se corrige una factura que la filial rechazó.", "not_rejected");
+      if (!machine || machine.owner_id !== user.id) throw new HttpError(403, "Solo quien publicó el equipo puede corregir la publicación.", "not_owner");
+      if (machine.ownership_status !== "rejected") throw new HttpError(409, "Solo se corrige una publicación que la filial rechazó.", "not_rejected");
       const doc = String(body.ownershipDoc || "").trim();
       if (doc.length < 4) throw new HttpError(400, "Indica la factura o el registro del equipo.", "ownership_doc");
+      const photos = body.photos ? normalizeMachinePhotos(body.photos, { required: true }) : parseMachinePhotos(machine.photos_json);
+      if (!photos.length) throw new HttpError(400, "Sube al menos una foto de la máquina.", "photos_required");
       const updated = txn(db, () => {
-        db.prepare("UPDATE machines SET ownership_status = 'pending', ownership_doc = ?, ownership_note = NULL WHERE id = ?").run(doc, machine.id);
+        db.prepare("UPDATE machines SET ownership_status = 'pending', ownership_doc = ?, ownership_note = NULL, photos_json = ? WHERE id = ?")
+          .run(doc, JSON.stringify(photos), machine.id);
         enqueueMachine(db, CELL, machine.id);
-        return machineDetail(db, db.prepare("SELECT * FROM machines WHERE id = ?").get(machine.id));
+        return machineDetail(db, db.prepare("SELECT * FROM machines WHERE id = ?").get(machine.id), CELL);
       });
       return { body: { machine: updated } };
     },

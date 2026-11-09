@@ -16,6 +16,38 @@ let brief = null;
 let demo = null;
 let session = JSON.parse(localStorage.getItem("maquirent.session") || "null");
 let lastPath = "";
+let rentalClock = null;
+let pendingRentalClock = null;
+
+function stopRentalClock() {
+  if (rentalClock) {
+    clearInterval(rentalClock);
+    rentalClock = null;
+  }
+}
+
+function formatSpan(ms) {
+  if (ms == null) return "—";
+  const total = Math.max(0, Math.floor(Number(ms) / 1000));
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  return `${minutes}m ${seconds}s`;
+}
+
+function formatWhen(value) {
+  if (!value) return "Pendiente";
+  const date = new Date(value.length === 10 ? `${value}T12:00:00Z` : value);
+  if (Number.isNaN(date.getTime())) return esc(value);
+  return new Intl.DateTimeFormat("es-CO", {
+    dateStyle: "medium",
+    timeStyle: value.length === 10 ? undefined : "short",
+    timeZone: "UTC",
+  }).format(date);
+}
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
@@ -195,9 +227,26 @@ function shell(content) {
 }
 
 function photoOf(machine) {
-  const id = machine.machineId || machine.id;
+  if (machine?.photoUrl) return machine.photoUrl;
+  if (machine?.photos?.[0]?.url) return machine.photos[0].url;
+  const cell = machine?.cell;
+  const id = machine?.machineId || machine?.id;
+  if (machine?.hasPhotos && cell && id) return `/api/cells/${cell}/machines/${id}/photo/0`;
   const known = ["co-cat-320", "co-toyota-8f", "co-jd-310", "co-grove-rt", "co-dynapac", "co-putz", "us-bobcat-t770", "us-jlg-600s", "us-cat-d6", "us-grove-tms", "us-putz-39", "us-bomag", "br-jcb-3cx", "br-liebherr-ltm", "br-schwing", "br-cat-336", "br-jlg-600", "br-dynapac", "de-liebherr-r920", "de-manitou", "de-hamm", "de-liebherr-ltm", "de-putz", "de-bobcat", "fr-volvo-ec220", "fr-haulotte", "fr-cat-cs", "fr-potain", "fr-jcb-3cx", "fr-putz"];
   return known.includes(id) ? `/machines/${id}.jpg` : "";
+}
+
+function machinePhotos(machine, cell = machine?.cell) {
+  if (Array.isArray(machine?.photos) && machine.photos.length) {
+    return machine.photos.map((photo) => photo.url).filter(Boolean);
+  }
+  const id = machine?.machineId || machine?.id;
+  const count = Number(machine?.photoCount) || 0;
+  if (count > 0 && cell && id) {
+    return Array.from({ length: count }, (_, index) => `/api/cells/${cell}/machines/${id}/photo/${index}`);
+  }
+  const fallback = photoOf({ ...machine, cell, id });
+  return fallback ? [fallback] : [];
 }
 
 function isMine(machine) {
@@ -371,7 +420,12 @@ async function viewMachine(cell, id) {
   const minStart = minDelivery(logistics);
   return `<section class="section grid two">
     <div>
-      ${photoOf({ ...machine, id }) ? `<img class="shot-lg" src="${photoOf({ ...machine, id })}" alt="">` : ""}
+      ${(() => {
+        const shots = machinePhotos({ ...machine, cell, id, machineId: id }, cell);
+        if (!shots.length) return "";
+        if (shots.length === 1) return `<img class="shot-lg" src="${shots[0]}" alt="">`;
+        return `<div class="photo-gallery">${shots.map((url) => `<img class="shot" src="${url}" alt="">`).join("")}</div>`;
+      })()}
       <p class="kicker">${FLAGS[cell]} ${esc(countryName(cell))} · ${esc(info.language)} · ${t("machine.contractHere")}</p>
       <h1>${esc(machine.title || globalResult.machine.title)}</h1>
       <p class="lede">${esc(machine.description || "")}</p>
@@ -559,7 +613,7 @@ function dossierPanel(user, info) {
     <h3>Expediente para alquilar</h3>
     <p>${headline}</p>
     ${user.dossier?.legalForm ? `<p>${esc(user.dossier.legalForm)}${user.dossier.representativeName ? ` · representante ${esc(user.dossier.representativeName)}` : ""}</p>` : ""}
-    ${papers.length ? `<ul>${papers.map((paper) => `<li><strong>${esc(paper.title)}</strong><br><span class="muted">${esc(paper.file)}${paper.reference ? ` · ${esc(paper.reference)}` : ""}${paper.insurer ? ` · ${esc(paper.insurer)} hasta ${esc(paper.expires)}` : ""}</span></li>`).join("")}</ul>` : `<p class="muted">${esc(info.safetyNote)}</p>`}
+    ${papers.length ? `<ul class="paper-list">${Object.entries(user.dossier.papers).map(([key, paper]) => paperRow(paper, { userId: user.id, paperKey: key, self: true })).join("")}</ul>` : `<p class="muted">${esc(info.safetyNote)}</p>`}
     ${reason}${operatorReason}${resubmit}
   </article>`;
 }
@@ -575,12 +629,14 @@ function reviewForm(kind, id) {
 }
 
 function machineMine(machine) {
+  const shots = machinePhotos({ ...machine, cell: session.cell }, session.cell);
   return `<article class="card">
+    ${shots[0] ? `<img class="shot" src="${shots[0]}" alt="">` : ""}
     <h3><a href="#/maquina/${session.cell}/${machine.id}">${esc(machine.title)}</a></h3>
     <p>${money(machine.dailyRate, session.cell)} ${t("card.day")} · ${esc(machine.city)}</p>
     <p>${t("mine.ownership")}: <strong>${esc(ownershipLabel(machine.ownershipStatus))}</strong>${machine.ownershipDoc ? ` · ${esc(machine.ownershipDoc)}` : ""}</p>
-    ${machine.ownershipStatus === "verified" ? `<p class="muted">${t("mine.visible")}</p>` : `<p>${machine.ownershipStatus === "rejected" ? "La filial rechazó la factura. Corrígela para enviarla otra vez." : "La filial revisa la factura antes de dejar reservar esta máquina."}</p>`}
-    ${machine.ownershipStatus === "rejected" ? `<form data-form="submit-ownership" data-id="${machine.id}"><div class="callout bad">${esc(machine.ownershipNote || "Sin motivo registrado.")}</div><label>Factura o registro corregido<input name="ownershipDoc" value="${esc(machine.ownershipDoc || "")}" required minlength="4"></label><button>Enviar otra vez a la filial</button></form>` : ""}
+    ${machine.ownershipStatus === "verified" ? `<p class="muted">${t("mine.visible")}</p>` : `<p>${machine.ownershipStatus === "rejected" ? "La filial rechazó la publicación. Corrige factura o fotos y envíala otra vez." : "La filial revisa fotos y factura antes de publicar y dejar reservar esta máquina."}</p>`}
+    ${machine.ownershipStatus === "rejected" ? `<form data-form="submit-ownership" data-id="${machine.id}"><div class="callout bad">${esc(machine.ownershipNote || "Sin motivo registrado.")}</div><label>Factura o registro corregido<input name="ownershipDoc" value="${esc(machine.ownershipDoc || "")}" required minlength="4"></label><label>Fotos nuevas (opcional, hasta 4)<input name="photos" type="file" accept="image/*" multiple></label><button>Enviar otra vez a la filial</button></form>` : ""}
   </article>`;
 }
 
@@ -593,7 +649,7 @@ async function viewAccount() {
     return `<section class="section">
       <p class="kicker">${FLAGS[user.cell]} ${esc(countryName(user.cell))}</p>
       <h1>${esc(user.legalName)}</h1>
-      <p>Esta cuenta es la filial de ${esc(countryName(user.cell))}. Aprueba o rechaza expedientes de empresas y facturas de máquinas. No publica ni alquila.</p>
+      <p>Esta cuenta es la filial de ${esc(countryName(user.cell))}. Aprueba o rechaza expedientes de empresas y publicaciones de máquinas (fotos y factura). No publica ni alquila.</p>
       <p class="actions-inline"><a class="button" href="#/revision">Abrir la cola de revisión</a></p>
     </section>`;
   }
@@ -638,7 +694,7 @@ async function viewPublish() {
   const info = countryOf(session.cell);
   return `<section class="section" style="max-width:760px">
     <h1>${t("publish.title", { country: countryName(session.cell) })}</h1>
-    <p>Cualquier cuenta aprobada puede publicar, también si la abriste para alquilar. La tarifa se escribe en ${esc(info.currency)} y al lado se muestra el equivalente en dólares. La máquina no se puede reservar hasta que la filial apruebe la factura o el registro.</p>
+    <p>Cualquier cuenta aprobada puede publicar, también si la abriste para alquilar. La tarifa se escribe en ${esc(info.currency)} y al lado se muestra el equivalente en dólares. Sube fotos del equipo: serán las que vea quien explore. La máquina no aparece como reservable hasta que la filial apruebe la publicación (fotos y factura o registro).</p>
     <form class="panel" data-form="publish">
       <label>Título<input name="title" required></label>
       <label>${t("explore.category")}<select name="category">${["Excavación", "Elevación", "Carga", "Compactación", "Concreto", "Grúa"].map((item) => `<option value="${esc(item)}">${esc(categoryName(item))}</option>`).join("")}</select></label>
@@ -653,17 +709,72 @@ async function viewPublish() {
         <label>Ciudad<input name="city" required></label>
       </div>
       <label>Descripción pública<textarea name="description" required></textarea></label>
+      <label>Fotos de la máquina (1 a 4)<input name="photos" type="file" accept="image/*" multiple required><span class="muted">JPG, PNG o WebP. Cada una menos de 350 KB. La primera es la portada del anuncio.</span></label>
       <label>Factura o registro del equipo<input name="ownershipDoc" placeholder="FAC-2026-100" required minlength="4"></label>
       <label class="check"><input type="checkbox" name="operatorRequired" checked> Exigir operador certificado</label>
-      <button>Publicar en la celda</button>
+      <button>Enviar a la filial</button>
     </form>
   </section>`;
 }
 
+function paperRow(paper, opts) {
+  const meta = `${esc(paper.file)}${paper.reference ? ` · ${esc(paper.reference)}` : ""}${paper.insurer ? ` · ${esc(paper.insurer)} hasta ${esc(paper.expires)}` : ""}`;
+  const action = opts.self
+    ? `data-action="view-paper" data-self="1" data-key="${esc(opts.paperKey)}"`
+    : `data-action="view-paper" data-user="${esc(opts.userId)}" data-key="${esc(opts.paperKey)}"`;
+  return `<li class="paper-item"><div><strong>${esc(paper.title)}</strong><br><span class="muted">${meta}</span></div><button type="button" class="secondary" ${action}>Ver</button></li>`;
+}
+
 function paperList(user) {
-  const papers = user.dossier?.papers ? Object.values(user.dossier.papers) : [];
+  const papers = user.dossier?.papers ? Object.entries(user.dossier.papers) : [];
   if (!papers.length) return "<p class=\"muted\">Esta cuenta no guardó el detalle de los papeles.</p>";
-  return `<ul>${papers.map((paper) => `<li><strong>${esc(paper.title)}</strong><br><span class="muted">${esc(paper.file)}${paper.reference ? ` · ${esc(paper.reference)}` : ""}${paper.insurer ? ` · ${esc(paper.insurer)} hasta ${esc(paper.expires)}` : ""}</span></li>`).join("")}</ul>`;
+  return `<ul class="paper-list">${papers.map(([key, paper]) => paperRow(paper, { userId: user.id, paperKey: key })).join("")}</ul>`;
+}
+
+function closePaperViewer() {
+  document.getElementById("paper-viewer")?.remove();
+  if (closePaperViewer.url) {
+    URL.revokeObjectURL(closePaperViewer.url);
+    closePaperViewer.url = null;
+  }
+}
+
+async function openPaperViewer(doc) {
+  closePaperViewer();
+  const binary = atob(doc.content);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  const blob = new Blob([bytes], { type: doc.mime || "application/pdf" });
+  const url = URL.createObjectURL(blob);
+  closePaperViewer.url = url;
+  const isImage = String(doc.mime || "").startsWith("image/");
+  const viewer = document.createElement("div");
+  viewer.id = "paper-viewer";
+  viewer.innerHTML = `<div class="paper-viewer-panel">
+    <div class="bar">
+      <div><p class="kicker">Documento</p><h2>${esc(doc.title || doc.file || "Papel")}</h2><p class="muted">${esc(doc.file || "")}${doc.generated ? " · vista de revisión" : ""}</p></div>
+      <div class="actions">
+        <a class="button secondary" href="${url}" download="${esc(doc.file || "documento.pdf")}" target="_blank" rel="noopener">Abrir en pestaña</a>
+        <button type="button" data-action="close-paper">Cerrar</button>
+      </div>
+    </div>
+    ${isImage ? `<img class="paper-frame" src="${url}" alt="${esc(doc.title || "Documento")}">` : `<iframe class="paper-frame" title="${esc(doc.title || "Documento")}" src="${url}"></iframe>`}
+  </div>`;
+  document.body.appendChild(viewer);
+}
+
+async function readUpload(file) {
+  if (!file) return null;
+  if (file.size > 350_000) throw new Error(`«${file.name}» supera 350 KB. Usa un PDF o foto más liviano.`);
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+  return {
+    file: file.name,
+    mime: file.type || "application/pdf",
+    content: btoa(binary),
+  };
 }
 
 async function viewReview() {
@@ -684,21 +795,26 @@ async function viewReview() {
     <p>Certificado <strong>${esc(user.operatorCertificate || "")}</strong></p>
     ${reviewForm("operator", user.id)}
   </article>`).join("");
-  const machines = queue.machines.map((machine) => `<article class="card">
-    <p class="kicker">Factura de la máquina · ${esc(ownershipLabel(machine.ownershipStatus))}</p>
+  const machines = queue.machines.map((machine) => {
+    const shots = machinePhotos({ ...machine, cell: session.cell }, session.cell);
+    return `<article class="card">
+    <p class="kicker">Publicación de máquina · ${esc(ownershipLabel(machine.ownershipStatus))}</p>
     <h3>${esc(machine.title)}</h3>
     <p>${esc(machine.tradeName || "")}${machine.ownerEmail ? ` · ${esc(machine.ownerEmail)}` : ""} · ${esc(machine.city)}</p>
+    ${shots.length ? `<div class="photo-thumbs">${shots.map((url) => `<img src="${url}" alt="">`).join("")}</div>` : `<p class="muted">Sin fotos adjuntas.</p>`}
     <p>Referencia <strong>${esc(machine.ownershipDoc || "")}</strong></p>
+    <p class="actions-inline"><button type="button" class="secondary" data-action="view-ownership" data-id="${esc(machine.id)}">Ver factura</button></p>
     ${reviewForm("ownership", machine.id)}
-  </article>`).join("");
+  </article>`;
+  }).join("");
   return `<section class="section">
     <p class="kicker">${FLAGS[session.cell]} Filial de ${esc(countryName(session.cell))}</p>
     <h1>Revisión de papeles</h1>
     <p>Solo esta cuenta decide. Una empresa no puede aprobarse sola. Rechazar exige un motivo, y la empresa lo ve en su cuenta.</p>
-    ${empty ? `<div class="callout">No hay expedientes ni facturas pendientes en este país.</div>` : ""}
+    ${empty ? `<div class="callout">No hay expedientes ni publicaciones pendientes en este país.</div>` : ""}
     ${dossiers ? `<h2 class="section">Empresas</h2><div class="review-list">${dossiers}</div>` : ""}
     ${operators ? `<h2 class="section">Certificados de operador</h2><div class="review-list">${operators}</div>` : ""}
-    ${machines ? `<h2 class="section">Facturas de máquinas</h2><div class="review-list">${machines}</div>` : ""}
+    ${machines ? `<h2 class="section">Máquinas por publicar</h2><div class="review-list">${machines}</div>` : ""}
   </section>`;
 }
 
@@ -712,26 +828,107 @@ async function viewOwnerMachines() {
   </section>`;
 }
 
+function bookingCardMeta(booking) {
+  const days = booking.schedule?.rentalDays || booking.quote?.days || "—";
+  if (booking.schedule?.clockRunning) {
+    return booking.schedule.overdue
+      ? `Uso vencido · debía devolverse ${formatWhen(booking.schedule.dueReturnAt)}`
+      : `En uso · quedan ${formatSpan(booking.schedule.remainingMs)} · ${days} día(s) contratados`;
+  }
+  return `${esc(booking.startDate)} → ${esc(booking.endDate)} · ${days} día(s) en obra`;
+}
+
 async function viewBookings() {
   const result = await api(`/api/my/bookings?homeCell=${session.cell}`);
-  return `<section class="section"><h1>${t("bookings.title")}</h1><p class="muted">${t("bookings.lede")}</p><div class="grid">${result.bookings.map((booking) => `<a class="card" href="#/alquiler/${booking.cell}/${booking.id}"><p class="kicker">${FLAGS[booking.cell]} ${esc(booking.stateLabel)} · ${booking.side === "owner" ? t("bookings.owner") : t("bookings.renter")}</p><h3>${esc(booking.machine.title)}</h3><p>${esc(booking.startDate)} → ${esc(booking.endDate)}</p><p>${money(booking.quote.charged, booking.cell)}</p></a>`).join("") || `<p>${t("bookings.empty")}</p>`}</div></section>`;
+  return `<section class="section"><h1>${t("bookings.title")}</h1><p class="muted">${t("bookings.lede")}</p><div class="grid">${result.bookings.map((booking) => `<a class="card" href="#/alquiler/${booking.cell}/${booking.id}"><p class="kicker">${FLAGS[booking.cell]} ${esc(booking.stateLabel)} · ${booking.side === "owner" ? t("bookings.owner") : t("bookings.renter")}</p><h3>${esc(booking.machine.title)}</h3><p>${bookingCardMeta(booking)}</p><p>${money(booking.quote.charged, booking.cell)}</p></a>`).join("") || `<p>${t("bookings.empty")}</p>`}</div></section>`;
+}
+
+function renderScheduleBoard(booking) {
+  const schedule = booking.schedule;
+  if (!schedule) return "";
+  const clockClass = schedule.overdue ? "clock-card late" : schedule.clockRunning ? "clock-card live" : "clock-card";
+  const clockBody = schedule.returnedAt
+    ? `<p class="clock-value">${formatSpan(schedule.usedMs)}</p><p class="muted">Tiempo real de uso, desde la entrega hasta la devolución.</p>`
+    : schedule.clockRunning
+      ? `<p class="clock-value" data-clock-remaining>${formatSpan(schedule.remainingMs)}</p>
+         <p>Debes devolverla antes del <strong>${esc(formatWhen(schedule.dueReturnAt))}</strong>.</p>
+         <p class="muted">Llevas <span data-clock-used>${formatSpan(schedule.usedMs)}</span> de uso.</p>`
+      : `<p class="clock-value">${esc(schedule.rentalDays)} día(s)</p><p class="muted">${esc(schedule.note)}</p>`;
+  return `<div class="schedule-board section">
+    <article class="${clockClass}">
+      <p class="kicker">${schedule.overdue ? "Fuera de plazo" : schedule.clockRunning ? "Conteo en curso" : schedule.returnedAt ? "Uso cerrado" : "Duración contratada"}</p>
+      <h3>${schedule.clockRunning || schedule.returnedAt ? "Tiempo de la máquina" : "Cuánto tiempo la tienes"}</h3>
+      ${clockBody}
+    </article>
+    <div class="schedule-grid">
+      ${schedule.dispatchDate ? `<article class="card"><p class="kicker">Transporte</p><h3>Sale el ${esc(formatWhen(schedule.dispatchDate))}</h3><p class="muted">${schedule.transitDays != null ? `${esc(schedule.transitDays)} días · ${esc(schedule.mode || "")}` : esc(schedule.mode || "")}</p></article>` : ""}
+      <article class="card"><p class="kicker">Entrega en obra</p><h3>${esc(formatWhen(schedule.plannedDelivery))}</h3><p class="muted">${schedule.deliveredAt ? `Registrada ${esc(formatWhen(schedule.deliveredAt))}` : "Todavía no hay acta de entrega."}</p></article>
+      <article class="card"><p class="kicker">Devolución</p><h3>${esc(formatWhen(schedule.dueReturnAt || schedule.plannedReturn))}</h3><p class="muted">${schedule.returnedAt ? `Registrada ${esc(formatWhen(schedule.returnedAt))}` : schedule.clockRunning ? "Cuenta desde el acta de entrega." : `Prevista el ${esc(formatWhen(schedule.plannedReturn))}.`}</p></article>
+      ${schedule.freeAgain ? `<article class="card"><p class="kicker">Libera el equipo</p><h3>${esc(formatWhen(schedule.freeAgain))}</h3><p class="muted">Fecha en que la máquina vuelve a estar libre, viaje incluido.</p></article>` : ""}
+    </div>
+  </div>`;
+}
+
+function renderTimeline(booking) {
+  const timeline = booking.timeline;
+  if (!timeline) return stepper(booking.state);
+  const next = timeline.nextDeadline
+    ? `<div class="callout ${booking.schedule?.overdue ? "bad" : "good"}"><strong>Ahora:</strong> ${esc(timeline.nextDeadline.label)}${timeline.nextDeadline.at ? ` · ${esc(formatWhen(timeline.nextDeadline.at))}` : ""}</div>`
+    : "";
+  return `<section class="timeline-board section">
+    <div class="bar"><h2>${esc(timeline.title)}</h2><p class="muted">${esc(brief.principles.escrowTiming)}</p></div>
+    ${next}
+    <ol class="timeline">
+      ${timeline.items.map((item) => `<li class="timeline-item ${esc(item.status)}">
+        <span class="dot" aria-hidden="true"></span>
+        <div>
+          <p class="kicker">${item.status === "done" ? "Hecho" : item.status === "now" ? "Ahora" : item.status === "late" ? "Vencido" : item.status === "skipped" ? "No aplica" : "Siguiente"}</p>
+          <h3>${esc(item.label)}</h3>
+          <p>${esc(item.hint || "")}</p>
+          <p class="muted">${item.at ? esc(formatWhen(item.at)) : "Sin registrar todavía"}</p>
+        </div>
+      </li>`).join("")}
+    </ol>
+  </section>`;
+}
+
+function startRentalClock(booking) {
+  stopRentalClock();
+  if (!booking.schedule?.clockRunning || !booking.schedule.dueReturnAt || !booking.schedule.deliveredAt) return;
+  const due = new Date(booking.schedule.dueReturnAt).getTime();
+  const started = new Date(booking.schedule.deliveredAt).getTime();
+  const tick = () => {
+    const now = Date.now();
+    const remaining = document.querySelector("[data-clock-remaining]");
+    const used = document.querySelector("[data-clock-used]");
+    const card = document.querySelector(".clock-card");
+    if (remaining) remaining.textContent = formatSpan(Math.max(0, due - now));
+    if (used) used.textContent = formatSpan(Math.max(0, now - started));
+    if (card && now > due) {
+      card.classList.add("late");
+      card.classList.remove("live");
+      const kicker = card.querySelector(".kicker");
+      if (kicker) kicker.textContent = "Fuera de plazo";
+    }
+  };
+  tick();
+  rentalClock = setInterval(tick, 1000);
 }
 
 async function viewBooking(cell, id) {
   const booking = await api(cellPath(cell, `/bookings/${id}`));
   const info = countryOf(cell);
+  pendingRentalClock = booking;
   return `<section class="section">
     <p class="kicker">${FLAGS[cell]} ${esc(info.name)} · ${esc(booking.id)}</p>
     <h1>${esc(booking.machine.title)}</h1>
-    <p>En obra ${esc(booking.startDate)} → ${esc(booking.endDate)}. ${booking.dispatchDate ? `La máquina sale el ${esc(booking.dispatchDate)} y vuelve a estar libre el ${esc(booking.returnBy)}.` : ""}</p>
-    <p>${esc(booking.parties.owner.legalName)} es el propietario. ${esc(booking.parties.renter.legalName)} es el arrendatario. MaquiRent solo intermedia.</p>
-    ${stepper(booking.state)}
+    <p>${esc(booking.parties.owner.legalName)} publica. ${esc(booking.parties.renter.legalName)} usa. MaquiRent solo intermedia.</p>
+    ${renderScheduleBoard(booking)}
+    ${renderTimeline(booking)}
     <div class="grid two">
       <div>
         ${economics(booking.quote)}
-        <div class="card section">${actionsFor(booking, cell)}</div>
-        <h3>Saga</h3>
-        <ul>${booking.steps.map((step) => `<li><strong>${esc(step.step)}</strong> · ${esc(step.createdAt)}</li>`).join("")}</ul>
+        <div class="action-stack section">${actionsFor(booking, cell)}</div>
       </div>
       <div>
         <article class="card"><h3>Papel de MaquiRent</h3><p>${esc(booking.intermediary)}</p><p class="muted">Foro si la mediación no basta: ${esc(booking.forum)}.</p><p><a href="#/contrato/${cell}/${booking.id}">Ver contrato modelo</a></p></article>
@@ -751,52 +948,103 @@ function stepper(state) {
   return `<ol class="steps">${FLOW.map((item, position) => `<li class="${position < index ? "done" : ""} ${position === index ? "now" : ""}">${esc(brief.states[item])}</li>`).join("")}</ol><p class="muted">${esc(brief.principles.escrowTiming)}</p>`;
 }
 
+function actionPanel(kind, title, lede, body) {
+  return `<article class="card action-panel action-${kind}">
+    <p class="kicker">${kind === "next" ? "Siguiente paso" : kind === "exit" ? "Salida del alquiler" : "Conflicto"}</p>
+    <h3>${title}</h3>
+    ${lede ? `<p class="muted">${lede}</p>` : ""}
+    ${body}
+  </article>`;
+}
+
 function actionsFor(booking, cell) {
   if (booking.state === "requested") {
-    return `<h3>Pagar y retener</h3><p class="muted">${esc(countryOf(cell).bankNote)}</p>
-      <form data-form="pay" data-id="${booking.id}" data-cell="${cell}">
+    const pay = actionPanel(
+      "next",
+      "Pagar y retener",
+      esc(countryOf(cell).bankNote),
+      `<form data-form="pay" data-id="${booking.id}" data-cell="${cell}">
         <label>Medio<select name="method"><option value="card">Tarjeta, vía ${esc(booking.quote.provider)}</option><option value="bank_transfer">Transferencia conciliada por ${esc(booking.quote.provider)}</option></select></label>
         <button>Cobrar y retener en el procesador</button>
-      </form>
-      ${cancelBox(booking, cell)}`;
+      </form>`,
+    );
+    return `${pay}${cancelBox(booking, cell)}`;
   }
-  if (booking.state === "paid_held") return `${actForm("deliver", "Acta de entrega", booking, cell)}${cancelBox(booking, cell)}${disputeForm(booking, cell)}`;
-  if (booking.state === "delivered") return `${actForm("return", "Acta de devolución", booking, cell)}${disputeForm(booking, cell)}`;
+  if (booking.state === "paid_held") {
+    return `${actForm("deliver", "Registrar acta de entrega", booking, cell)}${cancelBox(booking, cell)}${disputeForm(booking, cell)}`;
+  }
+  if (booking.state === "delivered") {
+    return `${actForm("return", "Registrar acta de devolución", booking, cell)}${disputeForm(booking, cell)}`;
+  }
   if (booking.state === "returned") {
-    return `<form data-form="settle" data-id="${booking.id}" data-cell="${cell}"><p>El procesador puede repartir el cobro porque ya hay acta de devolución.</p><button>Liquidar y hacer el split</button></form>${disputeForm(booking, cell)}`;
+    const settle = actionPanel(
+      "next",
+      "Liquidar",
+      "El procesador puede repartir el cobro porque ya hay acta de devolución.",
+      `<form data-form="settle" data-id="${booking.id}" data-cell="${cell}"><button>Liquidar y hacer el split</button></form>`,
+    );
+    return `${settle}${disputeForm(booking, cell)}`;
   }
   if (booking.state === "disputed") {
-    return `<form data-form="mediate" data-id="${booking.id}" data-cell="${cell}"><label>Nota de mediación<textarea name="note" required></textarea></label><button>Añadir nota</button></form>
-      <form data-form="resolve" data-id="${booking.id}" data-cell="${cell}"><label>Acuerdo<select name="outcome"><option value="release_owner">Liberar al propietario</option><option value="refund_renter">Reembolsar al arrendatario</option><option value="split">Partir el arrendamiento</option></select></label><button>Registrar acuerdo</button></form>
-      <p class="muted">Si no hay acuerdo, el foro es ${esc(booking.forum)}.</p>`;
+    return actionPanel(
+      "conflict",
+      "Mediación de la celda",
+      `Si no hay acuerdo, el foro es ${esc(booking.forum)}.`,
+      `<form data-form="mediate" data-id="${booking.id}" data-cell="${cell}"><label>Nota de mediación<textarea name="note" required></textarea></label><button>Añadir nota</button></form>
+      <form class="section" data-form="resolve" data-id="${booking.id}" data-cell="${cell}"><label>Acuerdo<select name="outcome"><option value="release_owner">Liberar al propietario</option><option value="refund_renter">Reembolsar al arrendatario</option><option value="split">Partir el arrendamiento</option></select></label><button>Registrar acuerdo</button></form>`,
+    );
   }
-  return `<p>Este alquiler está en ${esc(booking.stateLabel)}. No hay un paso de dinero pendiente en la saga.</p>`;
+  return `<article class="card"><p>Este alquiler está en ${esc(booking.stateLabel)}. No hay un paso de dinero pendiente en la saga.</p></article>`;
 }
 
 function cancelBox(booking, cell) {
   if (!booking.cancellation) return "";
-  return `<form data-form="cancel" data-id="${booking.id}" data-cell="${cell}"><h3>Cancelar</h3><p><strong>${esc(booking.cancellation.title)}</strong>. ${esc(booking.cancellation.detail)}</p><button class="secondary" type="submit">Aplicar esta política</button></form>`;
+  return actionPanel(
+    "exit",
+    "Cancelar el alquiler",
+    "Esto no entrega la máquina. Cierra la reserva según la política de fechas.",
+    `<form data-form="cancel" data-id="${booking.id}" data-cell="${cell}">
+      <div class="callout"><strong>${esc(booking.cancellation.title)}.</strong> ${esc(booking.cancellation.detail)}</div>
+      <button class="secondary" type="submit">Aplicar cancelación</button>
+    </form>`,
+  );
 }
 
 function disputeForm(booking, cell) {
-  return `<form data-form="dispute" data-id="${booking.id}" data-cell="${cell}"><h3>Abrir disputa</h3><label>Qué pasó<textarea name="note" required></textarea></label><button class="danger" type="submit">Pasar a mediación</button></form>`;
+  return actionPanel(
+    "conflict",
+    "Abrir una disputa",
+    "Úsalo si hay un desacuerdo. No sirve para entregar ni para cancelar con normalidad.",
+    `<form data-form="dispute" data-id="${booking.id}" data-cell="${cell}">
+      <label>Qué pasó<textarea name="note" required placeholder="Describe el conflicto"></textarea></label>
+      <button class="danger" type="submit">Pasar a mediación</button>
+    </form>`,
+  );
 }
 
 function actForm(kind, title, booking, cell) {
   const checks = brief.checklist.map((label, index) => `<label class="check"><input type="checkbox" name="check${index}" checked> ${esc(label)}</label>`).join("");
-  return `<form data-form="${kind}" data-id="${booking.id}" data-cell="${cell}">
-    <h3>${title}</h3>
-    <label>Horómetro<input name="hourMeter" type="number" required value="${esc(booking.machine.hourMeter)}"></label>
-    <div class="grid"><label>Latitud<input name="lat" required value="${esc(booking.machine.lat)}"></label><label>Longitud<input name="lng" required value="${esc(booking.machine.lng)}"></label></div>
-    <button type="button" class="secondary" data-action="geo">Usar mi ubicación</button>
-    ${checks}
-    <label>Fotos (archivos)<input name="photos" type="file" accept="image/*" multiple></label>
-    <label>O nombres de foto, separados por coma<input name="photoNames" placeholder="frente.jpg, horometro.jpg"></label>
-    ${kind === "return" ? `<label>Daño a descontar del depósito, en unidades mínimas<input name="damageClaim" type="number" value="0"></label>` : ""}
-    <label>Notas<textarea name="notes"></textarea></label>
-    <label class="check"><input type="checkbox" name="jointAcceptance" required> La contraparte está presente y acepta esta acta.</label>
-    <button>Registrar ${title.toLowerCase()}</button>
-  </form>`;
+  const days = booking.schedule?.rentalDays || booking.quote?.days || "—";
+  const lede = kind === "deliver"
+    ? `Al registrar esta acta empieza el conteo de los ${days} día(s) de uso. La devolución se calculará desde este momento.`
+    : "Cierra el conteo de uso y deja lista la liquidación del cobro retenido.";
+  return actionPanel(
+    "next",
+    title,
+    lede,
+    `<form data-form="${kind}" data-id="${booking.id}" data-cell="${cell}">
+      <label>Horómetro<input name="hourMeter" type="number" required value="${esc(booking.machine.hourMeter)}"></label>
+      <div class="grid"><label>Latitud<input name="lat" required value="${esc(booking.machine.lat)}"></label><label>Longitud<input name="lng" required value="${esc(booking.machine.lng)}"></label></div>
+      <button type="button" class="secondary" data-action="geo">Usar mi ubicación</button>
+      ${checks}
+      <label>Fotos (archivos)<input name="photos" type="file" accept="image/*" multiple></label>
+      <label>O nombres de foto, separados por coma<input name="photoNames" placeholder="frente.jpg, horometro.jpg"></label>
+      ${kind === "return" ? `<label>Daño a descontar del depósito, en unidades mínimas<input name="damageClaim" type="number" value="0"></label>` : ""}
+      <label>Notas<textarea name="notes"></textarea></label>
+      <label class="check"><input type="checkbox" name="jointAcceptance" required> La contraparte está presente y acepta esta acta.</label>
+      <button>${esc(title)}</button>
+    </form>`,
+  );
 }
 
 function renderAct(act) {
@@ -872,13 +1120,17 @@ async function view(route) {
 async function render() {
   const route = parseHash();
   document.documentElement.lang = currentLang();
+  stopRentalClock();
+  pendingRentalClock = null;
   try {
     app.innerHTML = shell(await view(route));
     if (route.path !== lastPath) {
       window.scrollTo(0, 0);
       lastPath = route.path;
     }
+    if (pendingRentalClock) startRentalClock(pendingRentalClock);
   } catch (error) {
+    stopRentalClock();
     app.innerHTML = shell(`<h1>${t("err.view")}</h1><p>${esc(error.message)}</p>`);
   }
 }
@@ -919,8 +1171,29 @@ document.body.addEventListener("click", async (event) => {
   if (!target) return;
   const action = target.dataset.action;
   try {
+    if (action === "close-paper") {
+      event.preventDefault();
+      closePaperViewer();
+      return;
+    }
+    if (action === "view-paper") {
+      event.preventDefault();
+      const path = target.dataset.self
+        ? `/api/cells/${session.cell}/me/papers/${encodeURIComponent(target.dataset.key)}`
+        : `/api/cells/${session.cell}/admin/users/${encodeURIComponent(target.dataset.user)}/papers/${encodeURIComponent(target.dataset.key)}`;
+      const doc = await api(path);
+      await openPaperViewer(doc);
+      return;
+    }
+    if (action === "view-ownership") {
+      event.preventDefault();
+      const doc = await api(`/api/cells/${session.cell}/admin/machines/${encodeURIComponent(target.dataset.id)}/ownership`);
+      await openPaperViewer(doc);
+      return;
+    }
     if (action === "logout") {
       event.preventDefault();
+      closePaperViewer();
       saveSession(null);
       if (location.hash !== "#/") location.hash = "#/";
       else await render();
@@ -999,10 +1272,13 @@ document.body.addEventListener("submit", async (event) => {
       const pack = brief.onboarding[data.cell];
       const papers = {};
       for (const paper of pack.papers) {
-        const file = form.querySelector(`[name=file_${paper.key}]`)?.files?.[0]?.name || "";
-        if (!file) throw new Error(`Adjunta el archivo de: ${paper.title}.`);
+        const upload = form.querySelector(`[name=file_${paper.key}]`)?.files?.[0];
+        if (!upload) throw new Error(`Adjunta el archivo de: ${paper.title}.`);
+        const file = await readUpload(upload);
         papers[paper.key] = {
-          file,
+          file: file.file,
+          mime: file.mime,
+          content: file.content,
           reference: data[`ref_${paper.key}`] || "",
           insurer: paper.needsPolicy ? data.insurer : "",
           expires: paper.needsPolicy ? data.expires : "",
@@ -1055,18 +1331,33 @@ document.body.addEventListener("submit", async (event) => {
       return;
     }
     if (kind === "publish") {
-      const created = await api(`/api/cells/${session.cell}/machines`, {
+      const files = [...(form.querySelector("[name=photos]")?.files || [])];
+      if (!files.length) throw new Error("Sube al menos una foto de la máquina.");
+      if (files.length > 4) throw new Error("Puedes subir hasta 4 fotos.");
+      const photos = await Promise.all(files.map(readUpload));
+      const { photos: _ignoredPhotos, ...fields } = data;
+      await api(`/api/cells/${session.cell}/machines`, {
         method: "POST",
-        body: { ...data, operatorRequired: Boolean(form.querySelector("[name=operatorRequired]")?.checked) },
+        body: {
+          ...fields,
+          photos,
+          operatorRequired: Boolean(form.querySelector("[name=operatorRequired]")?.checked),
+        },
       });
       location.hash = "#/maquinas";
-      showToast("Máquina registrada. La filial debe aprobar la factura antes de que se pueda reservar.");
+      showToast("Publicación enviada. La filial debe aprobar fotos y factura antes de que se pueda reservar.");
       return;
     }
     if (kind === "submit-ownership") {
-      await api(`/api/cells/${session.cell}/machines/${form.dataset.id}/ownership`, { method: "POST", body: { ownershipDoc: data.ownershipDoc } });
+      const files = [...(form.querySelector("[name=photos]")?.files || [])];
+      const body = { ownershipDoc: data.ownershipDoc };
+      if (files.length) {
+        if (files.length > 4) throw new Error("Puedes subir hasta 4 fotos.");
+        body.photos = await Promise.all(files.map(readUpload));
+      }
+      await api(`/api/cells/${session.cell}/machines/${form.dataset.id}/ownership`, { method: "POST", body });
       await render();
-      showToast("Factura enviada otra vez. La filial tiene que aprobarla.");
+      showToast("Publicación enviada otra vez. La filial tiene que aprobarla.");
       return;
     }
     if (kind === "book") {
