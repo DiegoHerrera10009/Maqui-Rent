@@ -70,6 +70,20 @@ function requireUser(req) {
   return user;
 }
 
+function requireAdmin(req) {
+  const user = requireUser(req);
+  if (user.role !== "admin") throw new HttpError(403, "Solo la filial puede revisar papeles.", "not_admin");
+  return user;
+}
+
+function reviewDecision(body) {
+  const decision = body.decision === "approved" ? "approved" : body.decision === "rejected" ? "rejected" : "";
+  if (!decision) throw new HttpError(400, "La decisión es aprobar o rechazar.", "decision");
+  const note = String(body.note || "").trim();
+  if (decision === "rejected" && note.length < 8) throw new HttpError(400, "Escribe el motivo del rechazo.", "note");
+  return { decision, note };
+}
+
 function requireOpen() {
   if (!flag(db, "accepting")) {
     throw new HttpError(503, `La celda de ${info.name} no está recibiendo operaciones. El resto de países sigue activo.`, "cell_paused");
@@ -97,8 +111,10 @@ function publicUser(user) {
     city: user.city,
     kycStatus: user.kyc_status,
     kycDoc: user.kyc_doc,
+    kycNote: user.kyc_note || null,
     operatorCertificate: user.operator_certificate,
     operatorStatus: user.operator_status,
+    operatorNote: user.operator_note || null,
     dossier: parseDossier(user.dossier_json),
     pseudonym: user.pseudonym,
     homeCell: user.home_cell || CELL,
@@ -229,7 +245,8 @@ listen(PORT, [
       const certificate = String(body.operatorCertificate || "").trim();
       const kycDoc = String(body.kycDoc || user.kyc_doc || "").trim();
       if (certificate && certificate.length < 5) throw new HttpError(400, "El certificado del operador es demasiado corto.", "certificate");
-      db.prepare("UPDATE users SET operator_certificate = ?, operator_status = ?, kyc_doc = ? WHERE id = ?").run(
+      if (user.role === "admin") throw new HttpError(403, "La filial no completa un expediente de empresa.", "staff");
+      db.prepare("UPDATE users SET operator_certificate = ?, operator_status = ?, operator_note = NULL, kyc_doc = ? WHERE id = ?").run(
         certificate || user.operator_certificate,
         certificate ? "pending" : user.operator_status,
         kycDoc || null,
@@ -240,26 +257,94 @@ listen(PORT, [
   },
   {
     method: "POST",
-    path: "/me/verify-kyc",
+    path: "/me/resubmit",
     handler: ({ req }) => {
       requireOpen();
       const user = requireUser(req);
-      if (!user.kyc_doc) throw new HttpError(400, "Indica el documento de identidad o de la empresa antes de verificar.", "kyc_doc");
-      db.prepare("UPDATE users SET kyc_status = 'verified' WHERE id = ?").run(user.id);
-      return { body: { ...publicUser(db.prepare("SELECT * FROM users WHERE id = ?").get(user.id)), verifier: "mock-kyc-kyb", note: "Verificación simulada de identidad y de existencia de la empresa." } };
+      if (user.role === "admin") throw new HttpError(403, "La filial no reenvía su propio expediente.", "staff");
+      if (user.kyc_status !== "rejected" && user.operator_status !== "rejected") {
+        throw new HttpError(409, "No hay un rechazo que volver a enviar.", "not_rejected");
+      }
+      db.prepare(`UPDATE users SET
+        kyc_status = CASE WHEN kyc_status = 'rejected' THEN 'pending' ELSE kyc_status END,
+        kyc_note = CASE WHEN kyc_status = 'rejected' THEN NULL ELSE kyc_note END,
+        operator_status = CASE WHEN operator_status = 'rejected' THEN 'pending' ELSE operator_status END,
+        operator_note = CASE WHEN operator_status = 'rejected' THEN NULL ELSE operator_note END
+        WHERE id = ?`).run(user.id);
+      return { body: publicUser(db.prepare("SELECT * FROM users WHERE id = ?").get(user.id)) };
+    },
+  },
+  {
+    method: "GET",
+    path: "/admin/queue",
+    handler: ({ req }) => {
+      requireOpen();
+      requireAdmin(req);
+      const dossiers = db.prepare("SELECT * FROM users WHERE role != 'admin' AND kyc_status = 'pending' ORDER BY created_at").all().map(publicUser);
+      const operators = db.prepare("SELECT * FROM users WHERE role != 'admin' AND kyc_status = 'verified' AND operator_status = 'pending' ORDER BY created_at").all().map(publicUser);
+      const machines = db.prepare("SELECT * FROM machines WHERE ownership_status = 'pending' ORDER BY created_at").all().map((machine) => {
+        const detail = machineDetail(db, machine);
+        const owner = db.prepare("SELECT email FROM users WHERE id = ?").get(machine.owner_id);
+        return { ...detail, ownerEmail: owner?.email || null };
+      });
+      return { body: { cell: CELL, dossiers, operators, machines } };
     },
   },
   {
     method: "POST",
-    path: "/me/verify-operator",
-    handler: ({ req }) => {
+    path: "/admin/reviews",
+    handler: ({ req, body }) => {
       requireOpen();
-      const user = requireUser(req);
-      if (!user.operator_certificate || user.operator_certificate.length < 5) {
-        throw new HttpError(400, "Primero registra el número del certificado del operador.", "certificate");
+      const admin = requireAdmin(req);
+      const { decision, note } = reviewDecision(body);
+      const kind = String(body.kind || "");
+      if (kind === "dossier" || kind === "operator") {
+        const user = db.prepare("SELECT * FROM users WHERE id = ?").get(body.id);
+        if (!user || user.role === "admin") throw new HttpError(404, "Esa empresa no está en esta celda.", "user_not_found");
+        if (kind === "dossier") {
+          if (user.kyc_status !== "pending") throw new HttpError(409, "Ese expediente ya no está en revisión.", "not_pending");
+          if (decision === "approved") {
+            db.prepare(`UPDATE users SET kyc_status = 'verified', kyc_note = NULL,
+              operator_status = CASE WHEN operator_certificate IS NOT NULL AND length(operator_certificate) >= 5 THEN 'verified' ELSE operator_status END,
+              operator_note = CASE WHEN operator_certificate IS NOT NULL AND length(operator_certificate) >= 5 THEN NULL ELSE operator_note END
+              WHERE id = ?`).run(user.id);
+          } else {
+            db.prepare(`UPDATE users SET kyc_status = 'rejected', kyc_note = ?,
+              operator_status = CASE WHEN operator_status = 'pending' THEN 'rejected' ELSE operator_status END,
+              operator_note = CASE WHEN operator_status = 'pending' THEN ? ELSE operator_note END
+              WHERE id = ?`).run(note, note, user.id);
+          }
+        } else {
+          if (user.kyc_status !== "verified") throw new HttpError(409, "Primero se aprueba el expediente de la empresa.", "kyc_required");
+          if (user.operator_status !== "pending") throw new HttpError(409, "Ese certificado ya no está en revisión.", "not_pending");
+          if (!user.operator_certificate) throw new HttpError(400, "No hay número de certificado para revisar.", "certificate");
+          db.prepare("UPDATE users SET operator_status = ?, operator_note = ? WHERE id = ?").run(
+            decision === "approved" ? "verified" : "rejected",
+            decision === "approved" ? null : note,
+            user.id,
+          );
+        }
+        return { body: { reviewer: admin.email, user: publicUser(db.prepare("SELECT * FROM users WHERE id = ?").get(user.id)) } };
       }
-      db.prepare("UPDATE users SET operator_status = 'verified' WHERE id = ?").run(user.id);
-      return { body: { ...publicUser(db.prepare("SELECT * FROM users WHERE id = ?").get(user.id)), verifier: `mock-operator-${CELL}`, note: info.safetyNote } };
+      if (kind === "ownership") {
+        const machine = db.prepare("SELECT * FROM machines WHERE id = ?").get(body.id);
+        if (!machine) throw new HttpError(404, "La máquina no está en esta celda.", "machine_not_found");
+        if (machine.ownership_status !== "pending") throw new HttpError(409, "Esa factura ya no está en revisión.", "not_pending");
+        if (!machine.ownership_doc || machine.ownership_doc.length < 4) {
+          throw new HttpError(400, "La máquina no tiene factura o registro para revisar.", "ownership_doc");
+        }
+        const updated = txn(db, () => {
+          db.prepare("UPDATE machines SET ownership_status = ?, ownership_note = ? WHERE id = ?").run(
+            decision === "approved" ? "verified" : "rejected",
+            decision === "approved" ? null : note,
+            machine.id,
+          );
+          enqueueMachine(db, CELL, machine.id);
+          return machineDetail(db, db.prepare("SELECT * FROM machines WHERE id = ?").get(machine.id));
+        });
+        return { body: { reviewer: admin.email, machine: updated } };
+      }
+      throw new HttpError(400, "La revisión es de expediente, operador o factura.", "kind");
     },
   },
   {
@@ -287,12 +372,16 @@ listen(PORT, [
     handler: ({ req, body }) => {
       requireOpen();
       const user = requireUser(req);
+      if (user.role === "admin") throw new HttpError(403, "La filial no publica maquinaria.", "staff");
       if ((user.home_cell || CELL) !== CELL) throw new HttpError(403, "Publica desde la celda de tu cuenta.", "foreign_account");
-      if (user.kyc_status !== "verified") throw new HttpError(409, "Verifica la identidad y la empresa antes de publicar.", "kyc_required");
+      if (user.kyc_status === "rejected") throw new HttpError(409, "La filial rechazó el expediente. El motivo está en la cuenta.", "kyc_rejected");
+      if (user.kyc_status !== "verified") throw new HttpError(409, "La filial todavía no aprueba el expediente.", "kyc_required");
       const fields = ["title", "category", "brand", "model", "year", "hourMeter", "dailyRate", "city", "description"];
       for (const field of fields) {
         if (body[field] === undefined || body[field] === "") throw new HttpError(400, "Faltan datos de la máquina.", "fields");
       }
+      const ownershipDoc = String(body.ownershipDoc || "").trim();
+      if (ownershipDoc.length < 4) throw new HttpError(400, "Indica la factura o el registro del equipo. La filial lo revisa antes de dejar reservar.", "ownership_doc");
       const majorRate = Number(body.dailyRate);
       if (!Number.isFinite(majorRate) || majorRate <= 0) throw new HttpError(400, "La tarifa diaria no es válida.", "rate");
       const machineId = id("mch");
@@ -314,7 +403,7 @@ listen(PORT, [
           String(body.title),
           String(body.description),
           body.operatorRequired ? 1 : 0,
-          String(body.ownershipDoc || "").trim() || null,
+          ownershipDoc,
           nowIso(),
         );
         enqueueMachine(db, CELL, machineId);
@@ -325,20 +414,22 @@ listen(PORT, [
   },
   {
     method: "POST",
-    path: "/machines/:id/verify-ownership",
+    path: "/machines/:id/ownership",
     handler: ({ req, params, body }) => {
       requireOpen();
       const user = requireUser(req);
+      if (user.role === "admin") throw new HttpError(403, "La filial no corrige la factura: la aprueba o la rechaza.", "staff");
       const machine = db.prepare("SELECT * FROM machines WHERE id = ?").get(params.id);
-      if (!machine || machine.owner_id !== user.id) throw new HttpError(403, "Solo el propietario verifica este equipo.", "not_owner");
-      const doc = String(body.ownershipDoc || machine.ownership_doc || "").trim();
+      if (!machine || machine.owner_id !== user.id) throw new HttpError(403, "Solo quien publicó el equipo puede corregir la factura.", "not_owner");
+      if (machine.ownership_status !== "rejected") throw new HttpError(409, "Solo se corrige una factura que la filial rechazó.", "not_rejected");
+      const doc = String(body.ownershipDoc || "").trim();
       if (doc.length < 4) throw new HttpError(400, "Indica la factura o el registro del equipo.", "ownership_doc");
       const updated = txn(db, () => {
-        db.prepare("UPDATE machines SET ownership_status = 'verified', ownership_doc = ? WHERE id = ?").run(doc, machine.id);
+        db.prepare("UPDATE machines SET ownership_status = 'pending', ownership_doc = ?, ownership_note = NULL WHERE id = ?").run(doc, machine.id);
         enqueueMachine(db, CELL, machine.id);
         return machineDetail(db, db.prepare("SELECT * FROM machines WHERE id = ?").get(machine.id));
       });
-      return { body: { machine: updated, verifier: "mock-ownership", note: "Se contrastó una referencia de factura o registro. En producción esto lo haría un revisor o un registro público." } };
+      return { body: { machine: updated } };
     },
   },
   {
@@ -423,6 +514,8 @@ listen(PORT, [
       if (!email || !homeCell || homeCell === CELL) {
         throw new HttpError(400, "La cuenta invitada tiene que venir de otro país.", "guest");
       }
+      const kycStatus = ["verified", "rejected", "pending"].includes(body.kycStatus) ? body.kycStatus : "pending";
+      const operatorStatus = ["verified", "rejected", "pending", "none"].includes(body.operatorStatus) ? body.operatorStatus : "none";
       const sessionToken = txn(db, () => {
         let user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
         if (!user) {
@@ -437,10 +530,10 @@ listen(PORT, [
             address: String(body.address || "").trim() || "-",
             city: String(body.city || "").trim() || "-",
             password_hash: hashPassword(id("pw")),
-            kyc_status: body.kycStatus === "verified" ? "verified" : "pending",
+            kyc_status: kycStatus,
             kyc_doc: body.kycDoc || null,
             operator_certificate: body.operatorCertificate || null,
-            operator_status: body.operatorStatus === "verified" ? "verified" : "none",
+            operator_status: operatorStatus,
             pseudonym: pseudonym(CELL, userId),
             created_at: nowIso(),
             home_cell: homeCell,
@@ -452,10 +545,10 @@ listen(PORT, [
           user = row;
         } else {
           db.prepare("UPDATE users SET kyc_status = ?, kyc_doc = ?, operator_certificate = ?, operator_status = ?, home_cell = ? WHERE id = ?").run(
-            body.kycStatus === "verified" ? "verified" : user.kyc_status,
+            kycStatus,
             body.kycDoc || user.kyc_doc,
             body.operatorCertificate || user.operator_certificate,
-            body.operatorStatus === "verified" ? "verified" : user.operator_status,
+            operatorStatus,
             homeCell,
             user.id,
           );

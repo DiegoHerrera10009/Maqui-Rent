@@ -1,4 +1,4 @@
-import { ACCOUNTS, DEMO_PASSWORD, MACHINES } from "../../shared/catalog.js";
+import { ACCOUNTS, DEMO_PASSWORD, MACHINES, PENDING_MACHINES } from "../../shared/catalog.js";
 import { hashPassword, id, nowIso, pseudonym } from "../../shared/ids.js";
 
 export function seed(db, cell) {
@@ -8,6 +8,8 @@ export function seed(db, cell) {
   const byEmail = new Map();
   for (const account of ACCOUNTS.filter((item) => item.cell === cell)) {
     const userId = id("usr");
+    const pending = account.kycStatus === "pending";
+    const certificate = account.operatorCertificate || null;
     const row = {
       id: userId,
       role: account.role,
@@ -18,17 +20,18 @@ export function seed(db, cell) {
       address: account.address,
       city: account.city,
       password_hash: passwordHash,
-      kyc_status: "verified",
+      kyc_status: pending ? "pending" : "verified",
       kyc_doc: account.kycDoc,
-      operator_certificate: account.operatorCertificate || null,
-      operator_status: account.operatorCertificate ? "verified" : "none",
+      operator_certificate: certificate,
+      operator_status: certificate ? (pending ? "pending" : "verified") : "none",
       pseudonym: pseudonym(cell, userId),
       created_at: nowIso(),
       home_cell: cell,
+      dossier_json: account.dossier ? JSON.stringify(account.dossier) : null,
     };
     db.prepare(`INSERT INTO users
-      (id, role, legal_name, tax_id, email, phone, address, city, password_hash, kyc_status, kyc_doc, operator_certificate, operator_status, pseudonym, created_at, home_cell)
-      VALUES (@id, @role, @legal_name, @tax_id, @email, @phone, @address, @city, @password_hash, @kyc_status, @kyc_doc, @operator_certificate, @operator_status, @pseudonym, @created_at, @home_cell)`).run(row);
+      (id, role, legal_name, tax_id, email, phone, address, city, password_hash, kyc_status, kyc_doc, operator_certificate, operator_status, pseudonym, created_at, home_cell, dossier_json)
+      VALUES (@id, @role, @legal_name, @tax_id, @email, @phone, @address, @city, @password_hash, @kyc_status, @kyc_doc, @operator_certificate, @operator_status, @pseudonym, @created_at, @home_cell, @dossier_json)`).run(row);
     byEmail.set(account.email, row);
     enqueueIdentity(db, cell, row);
   }
@@ -37,6 +40,30 @@ export function seed(db, cell) {
     db.prepare(`INSERT INTO machines
       (id, owner_id, category, brand, model, year, hour_meter, daily_rate, city, lat, lng, title, description, operator_required, ownership_status, ownership_doc, active, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'verified', ?, 1, ?)`).run(
+      machine.id,
+      owner.id,
+      machine.category,
+      machine.brand,
+      machine.model,
+      machine.year,
+      machine.hourMeter,
+      machine.dailyRate,
+      machine.city,
+      machine.lat,
+      machine.lng,
+      machine.title,
+      machine.description,
+      machine.operatorRequired ? 1 : 0,
+      machine.ownershipDoc,
+      nowIso(),
+    );
+    enqueueMachine(db, cell, machine.id);
+  }
+  for (const machine of PENDING_MACHINES.filter((item) => item.cell === cell)) {
+    const owner = byEmail.get(machine.ownerEmail);
+    db.prepare(`INSERT INTO machines
+      (id, owner_id, category, brand, model, year, hour_meter, daily_rate, city, lat, lng, title, description, operator_required, ownership_status, ownership_doc, active, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 1, ?)`).run(
       machine.id,
       owner.id,
       machine.category,

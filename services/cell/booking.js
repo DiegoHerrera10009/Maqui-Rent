@@ -461,8 +461,12 @@ function assertState(booking, allowed) {
 }
 
 function assertVerified(user) {
+  if (user.role === "admin") throw new HttpError(403, "La filial no reserva maquinaria.", "staff");
+  if (user.kyc_status === "rejected") {
+    throw new HttpError(409, "La filial rechazó el expediente. El motivo está en la cuenta.", "kyc_rejected");
+  }
   if (user.kyc_status !== "verified") {
-    throw new HttpError(409, "La cuenta debe completar KYC o KYB antes de reservar o publicar.", "kyc_required");
+    throw new HttpError(409, "La filial todavía no aprueba el expediente.", "kyc_required");
   }
 }
 
@@ -505,7 +509,12 @@ export function publicMachine(machine, owner) {
 
 export function machineDetail(db, machine) {
   const owner = db.prepare("SELECT * FROM users WHERE id = ?").get(machine.owner_id);
-  return { ...publicMachine(machine, owner), blocks: blocksOf(db, machine.id), ownershipDoc: machine.ownership_doc };
+  return {
+    ...publicMachine(machine, owner),
+    blocks: blocksOf(db, machine.id),
+    ownershipDoc: machine.ownership_doc,
+    ownershipNote: machine.ownership_note || null,
+  };
 }
 
 function blocksOf(db, machineId) {

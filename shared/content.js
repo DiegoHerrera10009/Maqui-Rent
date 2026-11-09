@@ -9,7 +9,7 @@ export const GUARANTEES = [
   },
   {
     risk: "Propietario falso o máquina inexistente",
-    mechanism: "KYC de la persona, KYB de la empresa y verificación de propiedad con factura o registro del equipo. Sin eso el anuncio no se puede reservar.",
+    mechanism: "La filial del país revisa el expediente de la empresa y la factura o el registro del equipo. Sin esa aprobación el anuncio no se puede reservar.",
   },
   {
     risk: "Disputa sobre el estado del equipo",

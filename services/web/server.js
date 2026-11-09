@@ -135,6 +135,7 @@ const server = http.createServer(async (req, res) => {
         legalName: account.legalName,
         email: account.email,
         city: account.city,
+        kycStatus: account.kycStatus || "verified",
       })),
     });
     return;
@@ -205,6 +206,7 @@ const server = http.createServer(async (req, res) => {
     if (homeCell === machineCell) return json(res, 400, { error: "Para un alquiler en tu país usa la celda de tu cuenta.", code: "same_country" });
     const me = await cellFetch(CELLS[homeCell], "/me", { auth: req.headers.authorization || "" });
     if (me.status !== 200) return json(res, me.status, me.data);
+    if (me.data.role === "admin") return json(res, 403, { error: "La filial no reserva maquinaria.", code: "staff" });
     const guest = await guestSession(machineCell, me.data);
     if (guest.status !== 200) return json(res, guest.status, guest.data);
     const result = await cellFetch(CELLS[machineCell], rest, {

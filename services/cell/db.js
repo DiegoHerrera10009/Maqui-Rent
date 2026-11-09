@@ -20,8 +20,10 @@ export function openDatabase(file) {
       password_hash TEXT NOT NULL,
       kyc_status TEXT NOT NULL,
       kyc_doc TEXT,
+      kyc_note TEXT,
       operator_certificate TEXT,
       operator_status TEXT NOT NULL,
+      operator_note TEXT,
       pseudonym TEXT NOT NULL UNIQUE,
       created_at TEXT NOT NULL,
       home_cell TEXT,
@@ -49,6 +51,7 @@ export function openDatabase(file) {
       operator_required INTEGER NOT NULL,
       ownership_status TEXT NOT NULL,
       ownership_doc TEXT,
+      ownership_note TEXT,
       active INTEGER NOT NULL,
       created_at TEXT NOT NULL
     );
@@ -153,6 +156,9 @@ export function openDatabase(file) {
     "ALTER TABLE bookings ADD COLUMN dispatch_date TEXT",
     "ALTER TABLE bookings ADD COLUMN return_by TEXT",
     "ALTER TABLE users ADD COLUMN dossier_json TEXT",
+    "ALTER TABLE users ADD COLUMN kyc_note TEXT",
+    "ALTER TABLE users ADD COLUMN operator_note TEXT",
+    "ALTER TABLE machines ADD COLUMN ownership_note TEXT",
   ]) {
     try {
       db.exec(sql);

@@ -1,16 +1,53 @@
 export const DEMO_PASSWORD = "demo123";
 
+const paper = (title, file, extra = {}) => ({ title, file, reference: extra.reference || null, insurer: extra.insurer || null, expires: extra.expires || null });
+
 export const ACCOUNTS = [
+  { cell: "CO", role: "admin", legalName: "Filial MaquiRent Colombia", email: "admin@demo.co", taxId: "900000001-1", phone: "+57 601 555 0100", city: "Bogotá", address: "Carrera 7 # 71-21", kycDoc: "NIT-900000001" },
   { cell: "CO", role: "owner", legalName: "Ríos Maquinaria S.A.S.", email: "ana.rios@demo.co", taxId: "900111222-3", phone: "+57 310 555 0101", city: "Bogotá", address: "Calle 72 # 10-20", kycDoc: "NIT-900111222" },
   { cell: "CO", role: "renter", legalName: "Obras Andinas S.A.S.", email: "obras.andinas@demo.co", taxId: "900333444-5", phone: "+57 320 555 0144", city: "Bogotá", address: "Carrera 15 # 93-60", kycDoc: "NIT-900333444", operatorCertificate: "OP-CO-45821" },
+  {
+    cell: "CO",
+    role: "renter",
+    legalName: "Taller Pacífico S.A.S.",
+    email: "taller.pacifico@demo.co",
+    taxId: "900777888-1",
+    phone: "+57 315 555 0199",
+    city: "Cali",
+    address: "Calle 5 # 40-12",
+    kycDoc: "CC-80111222",
+    kycStatus: "pending",
+    operatorCertificate: "OP-PAC-1001",
+    dossier: {
+      tradeName: "Taller Pacífico",
+      legalForm: "S.A.S.",
+      representativeName: "Luis Pacífico",
+      representativeId: "CC-80111222",
+      papers: {
+        existence: paper("Certificado de existencia y representación legal", "camara-pacifico.pdf"),
+        taxRegistration: paper("RUT", "rut-pacifico.pdf"),
+        representativeId: paper("Cédula del representante legal", "cedula-pacifico.pdf"),
+        insurance: paper("Póliza de responsabilidad civil", "poliza-pacifico.pdf", { reference: "POL-PAC-77", insurer: "Sura", expires: "2027-08-01" }),
+        operator: paper("Certificado del operador", "operador-pacifico.pdf", { reference: "OP-PAC-1001" }),
+      },
+    },
+  },
+  { cell: "US", role: "admin", legalName: "MaquiRent US Subsidiary", email: "admin@demo.us", taxId: "76-0001001", phone: "+1 713 555 0100", city: "Houston", address: "1200 Smith St", kycDoc: "EIN-760001001" },
   { cell: "US", role: "owner", legalName: "Hart Equipment LLC", email: "mike.hart@demo.us", taxId: "76-4412001", phone: "+1 713 555 0190", city: "Houston", address: "4100 Navigation Blvd", kycDoc: "EIN-764412001" },
   { cell: "US", role: "renter", legalName: "Pioneer Builds Inc.", email: "pioneer.builds@demo.us", taxId: "84-2201988", phone: "+1 312 555 0177", city: "Chicago", address: "233 S Wacker Dr", kycDoc: "EIN-842201988", operatorCertificate: "OSHA-22918" },
+  { cell: "BR", role: "admin", legalName: "Filial MaquiRent Brasil", email: "admin@demo.br", taxId: "00.111.222/0001-33", phone: "+55 11 95555 0100", city: "São Paulo", address: "Av. Paulista 200", kycDoc: "CNPJ-00111222" },
   { cell: "BR", role: "owner", legalName: "Mendes Locações Ltda.", email: "lucia.mendes@demo.br", taxId: "12.444.555/0001-10", phone: "+55 11 95555 0101", city: "São Paulo", address: "Av. Paulista 1000", kycDoc: "CNPJ-12444555" },
   { cell: "BR", role: "renter", legalName: "Atlas Obras Ltda.", email: "atlas.obras@demo.br", taxId: "33.222.111/0001-09", phone: "+55 41 95555 0188", city: "Curitiba", address: "Rua XV de Novembro 500", kycDoc: "CNPJ-33222111", operatorCertificate: "NR12-BR-8831" },
+  { cell: "DE", role: "admin", legalName: "MaquiRent Deutschland", email: "admin@demo.de", taxId: "DE100200300", phone: "+49 30 5550 100", city: "Berlín", address: "Unter den Linden 1", kycDoc: "HRB-100200" },
   { cell: "DE", role: "owner", legalName: "Berger Baumaschinen GmbH", email: "klaus.berger@demo.de", taxId: "DE812445001", phone: "+49 30 5550 110", city: "Berlín", address: "Holzmarktstraße 25", kycDoc: "HRB-81244" },
   { cell: "DE", role: "renter", legalName: "Nordbau GmbH", email: "nordbau@demo.de", taxId: "DE445120998", phone: "+49 89 5550 220", city: "Múnich", address: "Leopoldstraße 40", kycDoc: "HRB-44512", operatorCertificate: "FUEHR-DE-1902" },
+  { cell: "FR", role: "admin", legalName: "Filiale MaquiRent France", email: "admin@demo.fr", taxId: "FR100200300", phone: "+33 1 42 55 01 00", city: "París", address: "10 rue de Rivoli", kycDoc: "SIREN-100200" },
   { cell: "FR", role: "owner", legalName: "Durand Matériel SAS", email: "camille.durand@demo.fr", taxId: "FR448812220", phone: "+33 4 72 55 01 10", city: "Lyon", address: "14 quai Rambaud", kycDoc: "SIREN-448812" },
   { cell: "FR", role: "renter", legalName: "Chantier Lumière SAS", email: "chantier.lumiere@demo.fr", taxId: "FR779910034", phone: "+33 1 42 55 01 90", city: "París", address: "8 rue de Rivoli", kycDoc: "SIREN-779910", operatorCertificate: "CACES-R482-B2" },
+];
+
+export const PENDING_MACHINES = [
+  { id: "co-mixer-pending", cell: "CO", ownerEmail: "ana.rios@demo.co", category: "Concreto", brand: "IMER", model: "Mix 750", year: 2020, hourMeter: 2400, dailyRate: 450000, city: "Bogotá", lat: 4.65, lng: -74.1, title: "Mezcladora IMER Mix 750", description: "Mezcladora de concreto para losas y acabados.", operatorRequired: false, ownershipDoc: "FAC-CO-MIX-2026" },
 ];
 
 export const MACHINES = [

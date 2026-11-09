@@ -171,6 +171,7 @@ function navLink(href, label, extra = "") {
 
 function shell(content) {
   const user = session?.user;
+  const admin = user?.role === "admin";
   const lang = currentLang();
   return `<div class="wrap">
     <header class="top">
@@ -178,8 +179,10 @@ function shell(content) {
       <nav>
         ${navLink("#/explorar", t("nav.explore"))}
         ${navLink("#/confianza", t("nav.trust"))}
-        ${user ? `${navLink("#/cuenta", t("nav.account"))}${navLink("#/maquinas", t("nav.machines"))}${navLink("#/publicar", t("nav.publish"))}${navLink("#/alquileres", t("nav.bookings"))}` : ""}
-        ${user ? `<a class="me" href="#/cuenta">${esc(user.legalName)}</a><a href="#/" data-action="logout">${t("nav.logout")}</a>` : `${navLink("#/entrar", t("nav.login"))}${navLink("#/registro", t("nav.register"))}`}
+        ${user ? navLink("#/cuenta", t("nav.account")) : ""}
+        ${admin ? navLink("#/revision", t("nav.review")) : ""}
+        ${user && !admin ? `${navLink("#/maquinas", t("nav.machines"))}${navLink("#/publicar", t("nav.publish"))}${navLink("#/alquileres", t("nav.bookings"))}` : ""}
+        ${user ? `<a class="me" href="${admin ? "#/revision" : "#/cuenta"}">${esc(user.legalName)}</a><a href="#/" data-action="logout">${t("nav.logout")}</a>` : `${navLink("#/entrar", t("nav.login"))}${navLink("#/registro", t("nav.register"))}`}
         <label class="lang-pick"><span>${t("nav.language")}</span>
           <select name="uiLang" title="${esc(t("lang.hint"))}">${LANGS.map((item) => `<option value="${item.code}" ${item.code === lang ? "selected" : ""}>${esc(item.label)}</option>`).join("")}</select>
         </label>
@@ -416,7 +419,7 @@ function viewLogin() {
   const recovering = location.hash.includes("recuperar");
   const groups = brief.countries.map((country) => {
     const accounts = demo.accounts.filter((account) => account.cell === country.code);
-    return `<div class="demo-country"><h3>${FLAGS[country.code]} ${esc(countryName(country.code))}</h3>${accounts.map((account) => `<button class="account" type="button" data-action="demo-login" data-cell="${account.cell}" data-email="${esc(account.email)}"><strong>${esc(account.legalName)}</strong><br><span class="muted">${esc(account.email)}</span></button>`).join("")}</div>`;
+    return `<div class="demo-country"><h3>${FLAGS[country.code]} ${esc(countryName(country.code))}</h3>${accounts.map((account) => `<button class="account" type="button" data-action="demo-login" data-cell="${account.cell}" data-email="${esc(account.email)}"><strong>${esc(account.legalName)}</strong><br><span class="muted">${esc(accountRole(account.role))}${account.kycStatus === "pending" ? " · empieza en revisión" : ""} · ${esc(account.email)}</span></button>`).join("")}</div>`;
   }).join("");
   return `<section class="login-layout">
     <div class="login-pair">
@@ -522,47 +525,88 @@ function applyRegisterPack(form, cell) {
   }
 }
 
+function accountRole(role) {
+  return { admin: "Filial", owner: "Publica", renter: "Alquila" }[role] || role;
+}
+
 function kycLabel(status) {
-  return { pending: "En revisión", verified: "Habilitada para alquilar" }[status] || status;
+  return { pending: "En revisión de la filial", verified: "Aprobada por la filial", rejected: "Rechazada por la filial" }[status] || status;
 }
 
 function operatorLabel(status) {
-  return { none: "Sin certificado", pending: "En revisión", verified: "Verificado" }[status] || status;
+  return { none: "Sin certificado", pending: "En revisión de la filial", verified: "Aprobado", rejected: "Rechazado" }[status] || status;
+}
+
+function ownershipLabel(status) {
+  return { pending: "En revisión de la filial", verified: "Aprobada", rejected: "Rechazada" }[status] || status;
 }
 
 function dossierPanel(user, info) {
-  if (!user.dossier?.papers) {
-    return `<article class="card"><h3>Expediente</h3><p>${user.kycStatus === "verified" ? "Esta empresa ya puede alquilar." : "Falta el expediente de la empresa."}</p><p class="muted">${esc(info.safetyNote)}</p></article>`;
-  }
-  const papers = Object.values(user.dossier.papers);
+  const papers = user.dossier?.papers ? Object.values(user.dossier.papers) : [];
+  const headline = {
+    pending: "En revisión. La filial de este país debe aprobar los papeles antes de reservar o publicar.",
+    verified: "Aprobado. Esta empresa ya puede reservar y publicar.",
+    rejected: "Rechazado. La filial no habilitó esta empresa.",
+  }[user.kycStatus] || "Falta el expediente de la empresa.";
+  const reason = user.kycStatus === "rejected" && user.kycNote ? `<div class="callout bad"><strong>Motivo.</strong> ${esc(user.kycNote)}</div>` : "";
+  const operatorReason = user.operatorStatus === "rejected" && user.operatorNote && user.kycStatus !== "rejected"
+    ? `<div class="callout bad"><strong>Operador.</strong> ${esc(user.operatorNote)}</div>`
+    : "";
+  const resubmit = user.kycStatus === "rejected" || user.operatorStatus === "rejected"
+    ? `<form data-form="resubmit-dossier"><p class="muted">Corrige lo que indicó la filial y vuelve a enviarlo. Seguirá sin poder reservar hasta una nueva aprobación.</p><button>Enviar de nuevo a revisión</button></form>`
+    : "";
   return `<article class="card">
     <h3>Expediente para alquilar</h3>
-    <p>${esc(user.dossier.legalForm || "")}${user.dossier.representativeName ? ` · representante ${esc(user.dossier.representativeName)}` : ""}</p>
-    <p>${user.kycStatus === "verified" ? "Revisado. La empresa puede reservar maquinaria." : "Recibido. La filial lo revisa antes de permitir una reserva."}</p>
-    <ul>${papers.map((paper) => `<li><strong>${esc(paper.title)}</strong><br><span class="muted">${esc(paper.file)}${paper.reference ? ` · ${esc(paper.reference)}` : ""}${paper.insurer ? ` · ${esc(paper.insurer)} hasta ${esc(paper.expires)}` : ""}</span></li>`).join("")}</ul>
-    ${user.kycStatus === "verified" ? "" : `<form data-form="review-dossier"><p class="muted">En este boceto la revisión de la filial es inmediata.</p><button>Marcar expediente como revisado</button></form>`}
+    <p>${headline}</p>
+    ${user.dossier?.legalForm ? `<p>${esc(user.dossier.legalForm)}${user.dossier.representativeName ? ` · representante ${esc(user.dossier.representativeName)}` : ""}</p>` : ""}
+    ${papers.length ? `<ul>${papers.map((paper) => `<li><strong>${esc(paper.title)}</strong><br><span class="muted">${esc(paper.file)}${paper.reference ? ` · ${esc(paper.reference)}` : ""}${paper.insurer ? ` · ${esc(paper.insurer)} hasta ${esc(paper.expires)}` : ""}</span></li>`).join("")}</ul>` : `<p class="muted">${esc(info.safetyNote)}</p>`}
+    ${reason}${operatorReason}${resubmit}
   </article>`;
+}
+
+function reviewForm(kind, id) {
+  return `<form data-form="admin-review" data-kind="${esc(kind)}" data-id="${esc(id)}">
+    <label>Motivo, obligatorio si rechazas<textarea name="note" placeholder="Qué papel falta o qué no coincide"></textarea></label>
+    <div class="actions">
+      <button value="approved">Aprobar</button>
+      <button class="danger" value="rejected">Rechazar</button>
+    </div>
+  </form>`;
 }
 
 function machineMine(machine) {
   return `<article class="card">
     <h3><a href="#/maquina/${session.cell}/${machine.id}">${esc(machine.title)}</a></h3>
     <p>${money(machine.dailyRate, session.cell)} ${t("card.day")} · ${esc(machine.city)}</p>
-    <p>${t("mine.ownership")}: <strong>${esc(machine.ownershipStatus)}</strong></p>
-    ${machine.ownershipStatus !== "verified" ? `<form data-form="verify-ownership" data-id="${machine.id}"><label>Factura o registro<input name="ownershipDoc" value="${esc(machine.ownershipDoc || "")}"></label><button>Verificar propiedad</button></form>` : `<p class="muted">${t("mine.visible")}</p>`}
+    <p>${t("mine.ownership")}: <strong>${esc(ownershipLabel(machine.ownershipStatus))}</strong>${machine.ownershipDoc ? ` · ${esc(machine.ownershipDoc)}` : ""}</p>
+    ${machine.ownershipStatus === "verified" ? `<p class="muted">${t("mine.visible")}</p>` : `<p>${machine.ownershipStatus === "rejected" ? "La filial rechazó la factura. Corrígela para enviarla otra vez." : "La filial revisa la factura antes de dejar reservar esta máquina."}</p>`}
+    ${machine.ownershipStatus === "rejected" ? `<form data-form="submit-ownership" data-id="${machine.id}"><div class="callout bad">${esc(machine.ownershipNote || "Sin motivo registrado.")}</div><label>Factura o registro corregido<input name="ownershipDoc" value="${esc(machine.ownershipDoc || "")}" required minlength="4"></label><button>Enviar otra vez a la filial</button></form>` : ""}
   </article>`;
 }
 
 async function viewAccount() {
-  const user = session.user;
+  const user = await api(`/api/cells/${session.cell}/me`);
+  session.user = user;
+  saveSession(session);
   const info = countryOf(user.cell);
+  if (user.role === "admin") {
+    return `<section class="section">
+      <p class="kicker">${FLAGS[user.cell]} ${esc(countryName(user.cell))}</p>
+      <h1>${esc(user.legalName)}</h1>
+      <p>Esta cuenta es la filial de ${esc(countryName(user.cell))}. Aprueba o rechaza expedientes de empresas y facturas de máquinas. No publica ni alquila.</p>
+      <p class="actions-inline"><a class="button" href="#/revision">Abrir la cola de revisión</a></p>
+    </section>`;
+  }
   const result = await api(`/api/cells/${session.cell}/machines`);
   const mine = result.machines.filter((machine) => machine.ownerPseudonym === user.pseudonym);
+  const intro = user.kycStatus === "verified"
+    ? t("account.both")
+    : "Hasta que la filial apruebe el expediente, esta cuenta no puede reservar ni publicar.";
   return `<section class="section grid two">
     <div>
       <p class="kicker">${FLAGS[user.cell]} ${esc(countryName(user.cell))}</p>
       <h1>${esc(user.legalName)}</h1>
-      <p>${t("account.pseudo")} ${esc(user.pseudonym)}. ${t("account.both")}</p>
+      <p>${t("account.pseudo")} ${esc(user.pseudonym)}. ${intro}</p>
       <div class="callout">MaquiRent es el intermediario. El propietario es quien publica la máquina y el arrendatario es la empresa que la usa. Nosotros no somos ninguna de las dos partes ni custodiamos el dinero.</div>
       <div class="card">
         <p>Correo ${esc(user.email)}</p>
@@ -578,17 +622,23 @@ async function viewAccount() {
   <section class="section">
     <article class="card">
       <h2>${t("account.pubTitle")}</h2>
-      <p>${mine.length ? t("account.pubCount", { n: mine.length }) : t("account.pubEmpty")}</p>
-      <p class="actions-inline"><a class="button" href="#/maquinas">${t("account.openMine")}</a><a class="button secondary" href="#/publicar">${t("nav.publish")}</a></p>
+      <p>${user.kycStatus === "verified" ? (mine.length ? t("account.pubCount", { n: mine.length }) : t("account.pubEmpty")) : "Publicar se habilita cuando la filial apruebe el expediente."}</p>
+      ${user.kycStatus === "verified" ? `<p class="actions-inline"><a class="button" href="#/maquinas">${t("account.openMine")}</a><a class="button secondary" href="#/publicar">${t("nav.publish")}</a></p>` : ""}
     </article>
   </section>`;
 }
 
-function viewPublish() {
+async function viewPublish() {
+  const user = await api(`/api/cells/${session.cell}/me`);
+  session.user = user;
+  saveSession(session);
+  if (user.kycStatus !== "verified") {
+    return `<section class="section" style="max-width:760px"><h1>Falta la aprobación de la filial</h1><p>${esc(kycLabel(user.kycStatus))}. Cuando el expediente esté aprobado podrás publicar.</p><p><a href="#/cuenta">Ver el expediente</a></p></section>`;
+  }
   const info = countryOf(session.cell);
   return `<section class="section" style="max-width:760px">
     <h1>${t("publish.title", { country: countryName(session.cell) })}</h1>
-    <p>Cualquier cuenta verificada puede publicar, también si la abriste para alquilar. La tarifa se escribe en ${esc(info.currency)} y al lado se muestra el equivalente en dólares. La máquina no se puede reservar hasta verificar la factura o el registro.</p>
+    <p>Cualquier cuenta aprobada puede publicar, también si la abriste para alquilar. La tarifa se escribe en ${esc(info.currency)} y al lado se muestra el equivalente en dólares. La máquina no se puede reservar hasta que la filial apruebe la factura o el registro.</p>
     <form class="panel" data-form="publish">
       <label>Título<input name="title" required></label>
       <label>${t("explore.category")}<select name="category">${["Excavación", "Elevación", "Carga", "Compactación", "Concreto", "Grúa"].map((item) => `<option value="${esc(item)}">${esc(categoryName(item))}</option>`).join("")}</select></label>
@@ -603,10 +653,52 @@ function viewPublish() {
         <label>Ciudad<input name="city" required></label>
       </div>
       <label>Descripción pública<textarea name="description" required></textarea></label>
-      <label>Factura o registro del equipo<input name="ownershipDoc" placeholder="FAC-2026-100"></label>
+      <label>Factura o registro del equipo<input name="ownershipDoc" placeholder="FAC-2026-100" required minlength="4"></label>
       <label class="check"><input type="checkbox" name="operatorRequired" checked> Exigir operador certificado</label>
       <button>Publicar en la celda</button>
     </form>
+  </section>`;
+}
+
+function paperList(user) {
+  const papers = user.dossier?.papers ? Object.values(user.dossier.papers) : [];
+  if (!papers.length) return "<p class=\"muted\">Esta cuenta no guardó el detalle de los papeles.</p>";
+  return `<ul>${papers.map((paper) => `<li><strong>${esc(paper.title)}</strong><br><span class="muted">${esc(paper.file)}${paper.reference ? ` · ${esc(paper.reference)}` : ""}${paper.insurer ? ` · ${esc(paper.insurer)} hasta ${esc(paper.expires)}` : ""}</span></li>`).join("")}</ul>`;
+}
+
+async function viewReview() {
+  const queue = await api(`/api/cells/${session.cell}/admin/queue`);
+  const empty = !queue.dossiers.length && !queue.operators.length && !queue.machines.length;
+  const dossiers = queue.dossiers.map((user) => `<article class="card">
+    <p class="kicker">${esc(accountRole(user.role))} · ${esc(kycLabel(user.kycStatus))}</p>
+    <h3>${esc(user.legalName)}</h3>
+    <p>${esc(user.email)} · ${esc(user.taxId)} · ${esc(user.city)}</p>
+    ${user.dossier?.representativeName ? `<p>Representante ${esc(user.dossier.representativeName)} · ${esc(user.dossier.representativeId || "")}</p>` : ""}
+    ${paperList(user)}
+    ${reviewForm("dossier", user.id)}
+  </article>`).join("");
+  const operators = queue.operators.map((user) => `<article class="card">
+    <p class="kicker">Operador · ${esc(operatorLabel(user.operatorStatus))}</p>
+    <h3>${esc(user.legalName)}</h3>
+    <p>${esc(user.email)}</p>
+    <p>Certificado <strong>${esc(user.operatorCertificate || "")}</strong></p>
+    ${reviewForm("operator", user.id)}
+  </article>`).join("");
+  const machines = queue.machines.map((machine) => `<article class="card">
+    <p class="kicker">Factura de la máquina · ${esc(ownershipLabel(machine.ownershipStatus))}</p>
+    <h3>${esc(machine.title)}</h3>
+    <p>${esc(machine.tradeName || "")}${machine.ownerEmail ? ` · ${esc(machine.ownerEmail)}` : ""} · ${esc(machine.city)}</p>
+    <p>Referencia <strong>${esc(machine.ownershipDoc || "")}</strong></p>
+    ${reviewForm("ownership", machine.id)}
+  </article>`).join("");
+  return `<section class="section">
+    <p class="kicker">${FLAGS[session.cell]} Filial de ${esc(countryName(session.cell))}</p>
+    <h1>Revisión de papeles</h1>
+    <p>Solo esta cuenta decide. Una empresa no puede aprobarse sola. Rechazar exige un motivo, y la empresa lo ve en su cuenta.</p>
+    ${empty ? `<div class="callout">No hay expedientes ni facturas pendientes en este país.</div>` : ""}
+    ${dossiers ? `<h2 class="section">Empresas</h2><div class="review-list">${dossiers}</div>` : ""}
+    ${operators ? `<h2 class="section">Certificados de operador</h2><div class="review-list">${operators}</div>` : ""}
+    ${machines ? `<h2 class="section">Facturas de máquinas</h2><div class="review-list">${machines}</div>` : ""}
   </section>`;
 }
 
@@ -761,6 +853,13 @@ async function view(route) {
   if (name === "registro") return viewRegister();
   if (name === "confianza") return viewTrust();
   if (!session) return `<h1>${t("err.needSession")}</h1><p><a href="#/entrar">${t("err.enter")}</a></p>`;
+  if (session.user.role === "admin" && ["publicar", "maquinas", "alquileres", "alquiler", "contrato"].includes(name)) {
+    return `<h1>La filial no usa esta pantalla</h1><p>Desde aquí se revisan papeles, no se publican ni se alquilan máquinas.</p><p><a href="#/revision">Ir a revisión</a></p>`;
+  }
+  if (name === "revision") {
+    if (session.user.role !== "admin") return `<h1>Solo la filial revisa papeles</h1><p>Entra con la cuenta de la filial de tu país.</p><p><a href="#/entrar">Ingresar</a></p>`;
+    return viewReview();
+  }
   if (name === "cuenta") return viewAccount();
   if (name === "publicar") return viewPublish();
   if (name === "maquinas") return viewOwnerMachines();
@@ -788,8 +887,8 @@ async function login(cell, email, password) {
   const result = await api(`/api/cells/${cell}/auth/login`, { method: "POST", body: { email, password } });
   saveSession({ token: result.token, cell, user: result.user });
   if (!localStorage.getItem("maquirent.lang") && CELL_LANG[cell]) setLang(CELL_LANG[cell]);
-  location.hash = "#/cuenta";
-  showToast(`${countryName(cell)}`);
+  location.hash = result.user.role === "admin" ? "#/revision" : "#/cuenta";
+  showToast(result.user.role === "admin" ? `Filial de ${countryName(cell)}` : countryName(cell));
 }
 
 function formData(form) {
@@ -936,31 +1035,23 @@ document.body.addEventListener("submit", async (event) => {
       showToast("Cuenta creada. El expediente quedó en revisión.");
       return;
     }
-    if (kind === "review-dossier") {
-      const verified = await api(`/api/cells/${session.cell}/me/verify-kyc`, { method: "POST", body: {} });
-      const operator = await api(`/api/cells/${session.cell}/me/verify-operator`, { method: "POST", body: {} });
-      session.user = operator.id ? operator : verified;
+    if (kind === "resubmit-dossier") {
+      session.user = await api(`/api/cells/${session.cell}/me/resubmit`, { method: "POST", body: {} });
       saveSession(session);
       await render();
-      showToast("Expediente revisado. La empresa ya puede alquilar.");
+      showToast("El expediente volvió a la filial. Sigue sin poder reservar hasta que lo aprueben.");
       return;
     }
-    if (kind === "kyc") {
-      await api(`/api/cells/${session.cell}/me`, { method: "PATCH", body: { kycDoc: data.kycDoc } });
-      const verified = await api(`/api/cells/${session.cell}/me/verify-kyc`, { method: "POST", body: {} });
-      session.user = verified;
-      saveSession(session);
+    if (kind === "admin-review") {
+      const decision = event.submitter?.value;
+      if (!decision) throw new Error("Elige aprobar o rechazar.");
+      if (decision === "rejected" && String(data.note || "").trim().length < 8) throw new Error("Escribe el motivo del rechazo.");
+      await api(`/api/cells/${session.cell}/admin/reviews`, {
+        method: "POST",
+        body: { kind: form.dataset.kind, id: form.dataset.id, decision, note: data.note || "" },
+      });
       await render();
-      showToast("KYC/KYB verificado en esta celda.");
-      return;
-    }
-    if (kind === "operator") {
-      await api(`/api/cells/${session.cell}/me`, { method: "PATCH", body: { operatorCertificate: data.operatorCertificate } });
-      const verified = await api(`/api/cells/${session.cell}/me/verify-operator`, { method: "POST", body: {} });
-      session.user = verified;
-      saveSession(session);
-      await render();
-      showToast("Certificado de operador verificado.");
+      showToast(decision === "approved" ? "Aprobado. Ya puede operar en este país." : "Rechazado. La empresa verá el motivo en su cuenta.");
       return;
     }
     if (kind === "publish") {
@@ -969,13 +1060,13 @@ document.body.addEventListener("submit", async (event) => {
         body: { ...data, operatorRequired: Boolean(form.querySelector("[name=operatorRequired]")?.checked) },
       });
       location.hash = "#/maquinas";
-      showToast(`Máquina publicada. Propiedad: ${created.machine.ownershipStatus}.`);
+      showToast("Máquina registrada. La filial debe aprobar la factura antes de que se pueda reservar.");
       return;
     }
-    if (kind === "verify-ownership") {
-      await api(`/api/cells/${session.cell}/machines/${form.dataset.id}/verify-ownership`, { method: "POST", body: { ownershipDoc: data.ownershipDoc } });
+    if (kind === "submit-ownership") {
+      await api(`/api/cells/${session.cell}/machines/${form.dataset.id}/ownership`, { method: "POST", body: { ownershipDoc: data.ownershipDoc } });
       await render();
-      showToast("Propiedad verificada. El anuncio viaja al índice por el bus.");
+      showToast("Factura enviada otra vez. La filial tiene que aprobarla.");
       return;
     }
     if (kind === "book") {

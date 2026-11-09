@@ -42,7 +42,7 @@ const token = await login("CO", "obras.andinas@demo.co");
 const tooSoon = await call("/api/abroad/FR/bookings", {
   method: "POST",
   token,
-  body: { homeCell: "CO", machineId: "fr-volvo-ec220", startDate: "2026-11-02", endDate: "2026-11-06", idempotencyKey: "cross-soon" },
+  body: { homeCell: "CO", machineId: "fr-volvo-ec220", startDate: "2026-11-16", endDate: "2026-11-20", idempotencyKey: "cross-soon" },
 });
 assert(tooSoon.status === 409 && tooSoon.data.code === "transit_time", `se esperaba rechazo por el viaje, llegó ${tooSoon.status} ${tooSoon.data.code} ${tooSoon.data.error}`);
 const abroad = await call("/api/abroad/FR/bookings", {
@@ -141,9 +141,18 @@ const published = await call("/api/cells/CO/machines", {
     city: "Bogotá",
     description: "Equipo publicado por una cuenta que también alquila.",
     operatorRequired: false,
+    ownershipDoc: "FAC-SMOKE-500",
   },
 });
 assert(published.status === 201, published.data.error || "una cuenta que alquila no pudo publicar");
+assert(published.data.machine.ownershipStatus === "pending", "la factura quedó aprobada sin la filial");
+const ana = await login("CO", "ana.rios@demo.co");
+const hidden = await call("/api/cells/CO/bookings", {
+  method: "POST",
+  token: ana,
+  body: { homeCell: "CO", machineId: published.data.machine.id, startDate: "2027-04-01", endDate: "2027-04-03", idempotencyKey: "own-block" },
+});
+assert(hidden.status === 409 && hidden.data.code === "not_bookable", hidden.data.error || "se reservó una máquina sin factura aprobada");
 
 const incomplete = await call("/api/cells/CO/auth/register", {
   method: "POST",
@@ -176,12 +185,66 @@ const fresh = await call("/api/cells/CO/auth/register", {
 assert(fresh.status === 201, fresh.data.error || "no registró");
 assert(fresh.data.user.kycStatus === "pending", "el expediente quedó habilitado sin revisión");
 assert(fresh.data.user.dossier.papers.existence.file === "camara-comercio.pdf", "el certificado de cámara no quedó en el expediente");
+const selfApprove = await call("/api/cells/CO/me/verify-kyc", { method: "POST", token: fresh.data.token, body: {} });
+assert(selfApprove.status === 404, "la empresa todavía puede aprobarse sola");
 const blocked = await call("/api/cells/CO/bookings", {
   method: "POST",
   token: fresh.data.token,
   body: { homeCell: "CO", machineId: "co-toyota-8f", startDate: "2026-12-10", endDate: "2026-12-12", idempotencyKey: "kyc-block" },
 });
-assert(blocked.data.code === "kyc_required", "un usuario sin KYC pudo reservar");
+assert(blocked.data.code === "kyc_required", "un usuario sin aprobación pudo reservar");
+const companyReview = await call("/api/cells/CO/admin/reviews", {
+  method: "POST",
+  token: fresh.data.token,
+  body: { kind: "dossier", id: fresh.data.user.id, decision: "approved" },
+});
+assert(companyReview.status === 403 && companyReview.data.code === "not_admin", "una empresa pudo revisar expedientes");
+const admin = await login("CO", "admin@demo.co");
+const queue = await call("/api/cells/CO/admin/queue", { token: admin });
+assert(queue.status === 200, queue.data.error || "la filial no abrió la cola");
+assert(queue.data.dossiers.some((item) => item.email === "sin.kyc@demo.co"), "el expediente nuevo no llegó a la filial");
+assert(queue.data.dossiers.some((item) => item.email === "taller.pacifico@demo.co"), "el expediente de demostración no está en la cola");
+assert(queue.data.machines.some((item) => item.id === "co-mixer-pending"), "la factura pendiente no está en la cola");
+const shortNote = await call("/api/cells/CO/admin/reviews", {
+  method: "POST",
+  token: admin,
+  body: { kind: "dossier", id: queue.data.dossiers.find((item) => item.email === "taller.pacifico@demo.co").id, decision: "rejected", note: "corto" },
+});
+assert(shortNote.status === 400 && shortNote.data.code === "note", "aceptó un rechazo sin motivo");
+const taller = queue.data.dossiers.find((item) => item.email === "taller.pacifico@demo.co");
+const rejected = await call("/api/cells/CO/admin/reviews", {
+  method: "POST",
+  token: admin,
+  body: { kind: "dossier", id: taller.id, decision: "rejected", note: "La póliza está vencida en el documento adjunto." },
+});
+assert(rejected.data.user.kycStatus === "rejected", rejected.data.error || "el rechazo no quedó registrado");
+const tallerToken = await login("CO", "taller.pacifico@demo.co");
+const tallerBlocked = await call("/api/cells/CO/bookings", {
+  method: "POST",
+  token: tallerToken,
+  body: { homeCell: "CO", machineId: "co-grove-rt", startDate: "2027-05-02", endDate: "2027-05-04", idempotencyKey: "taller-block" },
+});
+assert(tallerBlocked.data.code === "kyc_rejected", "una empresa rechazada pudo reservar");
+const resubmitted = await call("/api/cells/CO/me/resubmit", { method: "POST", token: tallerToken, body: {} });
+assert(resubmitted.data.kycStatus === "pending", resubmitted.data.error || "no volvió a revisión");
+const approved = await call("/api/cells/CO/admin/reviews", {
+  method: "POST",
+  token: admin,
+  body: { kind: "dossier", id: fresh.data.user.id, decision: "approved" },
+});
+assert(approved.data.user.kycStatus === "verified" && approved.data.user.operatorStatus === "verified", approved.data.error || "la filial no aprobó el expediente");
+const afterApproval = await call("/api/cells/CO/bookings", {
+  method: "POST",
+  token: fresh.data.token,
+  body: { homeCell: "CO", machineId: "co-grove-rt", startDate: "2027-03-01", endDate: "2027-03-04", idempotencyKey: "kyc-after" },
+});
+assert(afterApproval.status === 201, afterApproval.data.error || "una empresa aprobada no pudo reservar");
+const owned = await call("/api/cells/CO/admin/reviews", {
+  method: "POST",
+  token: admin,
+  body: { kind: "ownership", id: published.data.machine.id, decision: "approved" },
+});
+assert(owned.data.machine.ownershipStatus === "verified", owned.data.error || "la filial no aprobó la factura");
 
 const cancelBooking = await call("/api/cells/CO/bookings", {
   method: "POST",
